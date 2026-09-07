@@ -1,0 +1,1110 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Widget Layout Prototype v4 (Shift Redesign)</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:#0f1117; --surface:#1c1f2e; --surface2:#252840;
+  --border:#2e3250; --accent:#5b8df6; --red:#ef4444;
+  --text:#e2e6f0; --text-dim:#7880a0;
+  --cell-w:100px; --cell-h:90px; --gap:5px;
+  --page-pad:12px; --header-h:56px; --sw:990px; --sh:510px;
+  --page-card-w:334px; --between-gap:20px;
+}
+body { width:var(--sw); height:var(--sh); overflow:hidden; background:var(--bg);
+  font-family:'Hiragino Sans','Inter',system-ui,sans-serif; color:var(--text);
+  user-select:none; -webkit-user-select:none; }
+
+/* HEADER */
+#header { height:var(--header-h); display:flex; align-items:center; gap:8px;
+  padding:0 12px; background:var(--surface); border-bottom:1px solid var(--border); }
+#header-label { font-size:9px; color:var(--text-dim); letter-spacing:.1em;
+  text-transform:uppercase; margin-right:4px; white-space:nowrap; }
+#header-right { margin-left:auto; display:flex; gap:6px; align-items:center; flex-shrink:0; }
+.add-btn { width:44px; height:44px; border-radius:8px; border:1.5px solid var(--border);
+  background:var(--surface2); cursor:pointer; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:2px;
+  transition:border-color .15s,background .15s,opacity .15s; flex-shrink:0; touch-action:none; }
+.add-btn:hover:not(.disabled) { border-color:var(--accent); background:#1e2540; }
+.add-btn.disabled { opacity:.35; cursor:default; pointer-events:none; }
+.add-btn .bi { font-size:15px; line-height:1; }
+.add-btn .bl { font-size:7px; color:var(--text-dim); }
+.add-btn .bs { font-size:7px; color:var(--accent); font-weight:700; }
+.icon-btn { width:34px; height:34px; border-radius:8px; border:1.5px solid var(--border);
+  background:var(--surface2); cursor:pointer; display:flex; align-items:center;
+  justify-content:center; font-size:14px; color:var(--text-dim);
+  transition:border-color .15s,color .15s; flex-shrink:0; }
+.icon-btn:hover { border-color:var(--accent); color:var(--text); }
+
+/* VIEWPORT / TRACK / PAGE */
+#viewport { position:relative; width:var(--sw); height:calc(var(--sh) - var(--header-h)); overflow:hidden; }
+#track { position:relative; height:100%;
+  transition:transform .38s cubic-bezier(.4,0,.2,1); will-change:transform; }
+/* Page backgrounds (grid cells, labels) — laid out in flow. Widgets live in
+   #widget-layer instead, positioned in one shared track-relative coordinate
+   space, so a widget moving between pages is just a left/top change on the
+   same DOM node — not a reparent — which is what lets it animate. */
+#pages-container { display:flex; align-items:center; height:100%; gap:var(--between-gap); padding-left:20px; }
+/* Absolute, spans the whole (possibly very wide) track so widgets can be
+   positioned anywhere across every page without being clipped. */
+#widget-layer { position:absolute; inset:0; pointer-events:none; }
+.page { flex-shrink:0; width:var(--page-card-w); display:inline-flex; flex-direction:column;
+  background:var(--surface); border-radius:14px; border:1px solid var(--border); padding:var(--page-pad); }
+.page-label { font-size:8px; color:var(--text-dim); letter-spacing:.08em;
+  text-transform:uppercase; margin-bottom:8px; }
+
+/* GRID */
+.grid { position:relative; display:grid;
+  grid-template-columns:repeat(3,var(--cell-w)); grid-template-rows:repeat(2,var(--cell-h)); gap:var(--gap); }
+.ghost-cell { border-radius:8px; border:1.5px dashed transparent; pointer-events:none; }
+.empty-hint { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  color:var(--border); font-size:10px; pointer-events:none; }
+
+/* DOTS */
+#dots { position:absolute; bottom:10px; left:50%; transform:translateX(-50%);
+  display:flex; gap:6px; pointer-events:none; }
+.dot { width:6px; height:6px; border-radius:50%; background:var(--border); transition:background .2s,transform .2s; }
+.dot.active { background:var(--accent); transform:scale(1.3); }
+
+/* WIDGET */
+.widget { position:absolute; border-radius:10px; background:var(--surface2);
+  border:1.5px solid var(--border); cursor:default; z-index:1; pointer-events:auto;
+  transition:border-color .15s,box-shadow .2s,left .15s ease-out,top .15s ease-out;
+  touch-action:none; }
+.widget:hover { border-color:#3e4570; }
+.widget.lifting { transform:scale(1.05) translateY(-5px);
+  box-shadow:0 12px 40px rgba(0,0,0,.65),0 0 0 2px var(--accent); z-index:100;
+  transition:transform .18s cubic-bezier(.34,1.56,.64,1),box-shadow .18s; }
+.widget-inner { width:100%; height:100%; padding:8px; display:flex; flex-direction:column; gap:4px; }
+.widget-name { font-size:8px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--text-dim); }
+.widget-content { flex:1; display:flex; align-items:center; justify-content:center; }
+.widget-emoji { font-size:22px; }
+
+/* Widget delete button */
+.widget-del { position:absolute; top:4px; right:4px; width:18px; height:18px;
+  border-radius:50%; border:1px solid var(--border); background:var(--surface);
+  color:var(--text-dim); font-size:11px; line-height:18px; text-align:center;
+  cursor:pointer; opacity:0; transition:opacity .12s,background .12s,color .12s; z-index:20; }
+.widget:hover .widget-del { opacity:1; }
+.widget-del:hover { background:var(--red); color:#fff; border-color:var(--red); }
+
+/* HANDLES */
+.handle { position:absolute; background:var(--accent); border-radius:3px;
+  opacity:0; transition:opacity .12s; z-index:10; }
+.widget:hover .handle { opacity:.55; }
+.handle:hover { opacity:1 !important; }
+.handle-top    { top:-4px;    left:50%; transform:translateX(-50%); width:28px; height:7px; cursor:n-resize; }
+.handle-bottom { bottom:-4px; left:50%; transform:translateX(-50%); width:28px; height:7px; cursor:s-resize; }
+.handle-left   { left:-4px;   top:50%;  transform:translateY(-50%); width:7px;  height:28px; cursor:w-resize; }
+.handle-right  { right:-4px;  top:50%;  transform:translateY(-50%); width:7px;  height:28px; cursor:e-resize; }
+
+/* DROP PREVIEW — positioned relative to #viewport */
+#drop-preview { position:absolute; border-radius:10px; pointer-events:none; z-index:200; display:none;
+  background:rgba(91,141,246,.18); border:2px solid var(--accent); }
+#drop-preview.blocked { background:rgba(239,68,68,.18); border-color:var(--red); }
+
+/* FLOAT */
+#float-widget { position:fixed; pointer-events:none; z-index:9999; display:none; border-radius:10px;
+  background:var(--surface2); border:2px solid var(--accent);
+  box-shadow:0 16px 48px rgba(0,0,0,.7); transform:scale(1.05) translateY(-5px); opacity:.88; }
+#float-widget .widget-inner { padding:8px; }
+
+/* MODE BAR */
+#mode-bar { position:fixed; bottom:14px; left:50%; transform:translateX(-50%);
+  background:var(--surface); border:1px solid var(--border); border-radius:10px;
+  padding:5px; display:flex; gap:4px; z-index:500; box-shadow:0 6px 24px rgba(0,0,0,.5); }
+#mode-bar span { font-size:8px; color:var(--text-dim); align-self:center; padding:0 6px;
+  letter-spacing:.08em; text-transform:uppercase; }
+.mode-btn { padding:5px 12px; border-radius:6px; border:1.5px solid transparent;
+  background:transparent; color:var(--text-dim); font-size:10px; cursor:pointer;
+  transition:all .12s; font-family:inherit; }
+.mode-btn:hover { color:var(--text); background:var(--surface2); }
+.mode-btn.active { background:var(--accent); color:#fff; font-weight:700; }
+.mode-btn.mode-locked { opacity:.3; cursor:not-allowed; }
+
+/* TOAST */
+#toast { position:fixed; top:14px; left:50%;
+  transform:translateX(-50%) translateY(-50px);
+  background:var(--surface2); border:1px solid var(--border); color:var(--text);
+  font-size:10px; padding:6px 16px; border-radius:6px; z-index:9999;
+  transition:transform .28s cubic-bezier(.34,1.4,.64,1); pointer-events:none; }
+#toast.show { transform:translateX(-50%) translateY(0); }
+
+/* LP RING */
+.lp-ring { position:fixed; border-radius:50%; border:2.5px solid var(--accent);
+  pointer-events:none; z-index:8000; opacity:0; }
+.lp-ring.go { animation:lpExpand .5s linear forwards; }
+@keyframes lpExpand { 0%{opacity:.8;transform:scale(.4)} 100%{opacity:0;transform:scale(1.6)} }
+
+/* MODAL */
+#modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.6);
+  display:none; align-items:center; justify-content:center; z-index:10000; }
+#modal-overlay.open { display:flex; }
+#modal { background:var(--surface); border:1px solid var(--border); border-radius:16px;
+  padding:24px; width:640px; max-height:80vh; overflow-y:auto;
+  box-shadow:0 24px 64px rgba(0,0,0,.8); }
+#modal h2 { font-size:14px; font-weight:700; color:var(--text); margin-bottom:14px; }
+#modal ul { padding-left:18px; font-size:11px; line-height:1.9; color:var(--text); }
+#modal li { margin-bottom:8px; }
+#modal li b { color:var(--accent); }
+#modal-close { margin-top:18px; padding:7px 20px; border-radius:8px;
+  border:1.5px solid var(--border); background:var(--surface2); color:var(--text);
+  font-size:11px; cursor:pointer; font-family:inherit; }
+#modal-close:hover { border-color:var(--accent); }
+</style>
+</head>
+<body>
+<div id="header">
+  <div id="header-label">追加</div>
+  <!-- add buttons injected by JS -->
+  <div id="header-right">
+    <button class="icon-btn" id="btn-reset" title="リセット">↺</button>
+    <button class="icon-btn" id="btn-help"  title="仕様を見る">?</button>
+  </div>
+</div>
+
+<div id="viewport">
+  <div id="track">
+    <div id="pages-container"></div>
+    <div id="widget-layer"></div>
+  </div>
+  <div id="drop-preview"></div>
+  <div id="dots"></div>
+</div>
+
+<div id="float-widget">
+  <div class="widget-inner">
+    <div class="widget-name" id="float-name"></div>
+    <div class="widget-content"><span class="widget-emoji" id="float-emoji"></span></div>
+  </div>
+</div>
+
+<div id="mode-bar">
+  <span>並び替えロジック</span>
+  <button class="mode-btn active" data-mode="shift">シフト自由配置</button>
+  <button class="mode-btn mode-locked" data-mode="shift-left" disabled>シフト左詰め</button>
+  <button class="mode-btn mode-locked" data-mode="shift-strict-left" disabled>シフト真左詰め</button>
+  <button class="mode-btn" data-mode="swap">スワップ</button>
+  <button class="mode-btn" data-mode="live-swap">リアルタイムスワップ</button>
+</div>
+
+<div id="toast"></div>
+<div class="lp-ring" id="lp-ring"></div>
+
+<!-- SPEC MODAL -->
+<div id="modal-overlay">
+  <div id="modal">
+    <h2>② スワップ 仕様（3列×2行 / XS=1×1・S=1×2・L=2×2）</h2>
+    <ul>
+      <li><b>同じ形同士</b>（XS⇔XS, S⇔S, L⇔L）は常に交換可能。ページを跨いでもOK。</li>
+      <li><b>空きマス</b>にドロップした場合は移動のみ。</li>
+      <li><b>S ⇔ 1列分の中身</b>（単体XS / 縦に並んだXS2個）は列ごと交換。ページを跨いでもOK。
+        ただしドラッグ中のXSと同じ列にもう1つXSがいる場合（抜けても列が空にならない）は不可。</li>
+      <li><b>L ⇔ 1列分の中身</b>（単体XS / 縦に並んだXS2個 / S）は、同ページであればLのどの列にドロップしても同じ結果（Lは反対側の列へスライド、中身はLが空けた列へ）。
+        ただしドラッグ中のXSと同じ列にもう1つXSがいる場合は不可。</li>
+      <li><b>Lが絡む交換がページを跨ぐ場合</b>：Lをドラッグする側からは「ドロップ先の2列分をまるごと交換」で常に成立する。
+        逆にXS/Sをドラッグしてページを跨いでLと交換することは、周辺列の空き状況に関わらず常に不可。</li>
+    </ul>
+    <button id="modal-close">閉じる</button>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════
+const COLS=3, ROWS=2, MAX_WIDGET_COLS=2;
+const CELL_W=100, CELL_H=90, GAP=5, PAGE_PAD=12;
+const SW=990;
+const LONG_PRESS_MS=500;
+const PAGE_CARD_W=334, BETWEEN_GAP=20, TRACK_PAD=20;
+const PAGE_STRIDE=PAGE_CARD_W+BETWEEN_GAP;
+
+const DEFS=[
+  {id:0,name:'カレンダー',emoji:'📅',cols:1,rows:1},
+  {id:1,name:'天気',      emoji:'⛅',cols:1,rows:2},
+  {id:2,name:'マップ',    emoji:'🗺️', cols:2,rows:2},
+  {id:3,name:'ミュージック',emoji:'🎵',cols:1,rows:1},
+  {id:4,name:'メモ',      emoji:'📝',cols:1,rows:2},
+  {id:5,name:'時計',      emoji:'🕐',cols:1,rows:1},
+  {id:6,name:'フォト',    emoji:'🖼️', cols:2,rows:2},
+  {id:7,name:'ニュース',  emoji:'📰',cols:2,rows:2},
+  {id:8,name:'タスク',    emoji:'✅',cols:1,rows:1},
+];
+
+const INITIAL_PLACED=[
+  {defId:2,page:0,col:1,row:0,cols:2,rows:2},
+  {defId:0,page:0,col:0,row:0,cols:1,rows:1},
+  {defId:5,page:0,col:0,row:1,cols:1,rows:1},
+  {defId:1,page:1,col:0,row:0,cols:1,rows:2},
+  {defId:3,page:1,col:1,row:0,cols:1,rows:1},
+];
+
+// ═══════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════
+let placed=[];
+let mode='shift';  // デフォルトはシフト挙動
+let currentPage=0;
+
+// ═══════════════════════════════════════════════════════
+// GRID UTILS
+// ═══════════════════════════════════════════════════════
+const wPx  = c => c*CELL_W+(c-1)*GAP;
+const hPx  = r => r*CELL_H+(r-1)*GAP;
+const cellX= c => c*(CELL_W+GAP);
+const cellY= r => r*(CELL_H+GAP);
+const clone = arr => arr.map(w=>({...w}));
+const isPlaced = id => placed.some(p=>p.defId===id);
+const requiredPages = (arr=placed) => arr.length ? Math.max(...arr.map(p=>p.page))+2 : 1;
+
+function occFrom(arr, excludeId=null){
+  const s=new Set();
+  for(const w of arr){
+    if(w.defId===excludeId) continue;
+    for(let c=w.col;c<w.col+w.cols;c++)
+      for(let r=w.row;r<w.row+w.rows;r++)
+        s.add(`${w.page},${c},${r}`);
+  }
+  return s;
+}
+
+function occFromExcluding(arr, excludeIds){
+  const s=new Set();
+  for(const w of arr){
+    if(excludeIds.has(w.defId)) continue;
+    for(let c=w.col;c<w.col+w.cols;c++)
+      for(let r=w.row;r<w.row+w.rows;r++)
+        s.add(`${w.page},${c},${r}`);
+  }
+  return s;
+}
+
+function canPlace(occ,cols,rows,page,col,row){
+  if(col<0||row<0||col+cols>COLS||row+rows>ROWS) return false;
+  for(let dc=0;dc<cols;dc++) for(let dr=0;dr<rows;dr++)
+    if(occ.has(`${page},${col+dc},${row+dr}`)) return false;
+  return true;
+}
+
+function firstFit(arr,cols,rows){
+  const occ=occFrom(arr);
+  for(let p=0;;p++)
+    for(let r=0;r<=ROWS-rows;r++)
+      for(let c=0;c<=COLS-cols;c++)
+        if(canPlace(occ,cols,rows,p,c,r)) return{page:p,col:c,row:r};
+}
+
+// ═══════════════════════════════════════════════════════
+// SWAP LOGIC (②) — general rules, not per-case branching
+//
+// Shapes: XS=1x1, S=1x2 (fills a whole column), L=2x2 (fills a 2-column band).
+// A column can only ever hold: nothing / one lone XS / two stacked XS / one S.
+// A page can only ever hold one L (its two possible bands share column 2,
+// so both can never coexist on the same page).
+// ═══════════════════════════════════════════════════════
+const shapeOf = w => (w.cols===2 ? 'L' : (w.rows===2 ? 'S' : 'XS'));
+
+function widgetsOverlapping(arr,page,col,row,cols,rows,excludeId){
+  return arr.filter(w=>{
+    if(w.page!==page||w.defId===excludeId) return false;
+    return !(w.col+w.cols<=col||col+cols<=w.col||w.row+w.rows<=row||row+rows<=w.row);
+  });
+}
+
+function placeAt(arr,id,page,col,row){
+  const next=clone(arr);
+  const w=next.find(w=>w.defId===id);
+  w.page=page;w.col=col;w.row=row;
+  return next;
+}
+
+function swapPositions(arr,idA,idB){
+  const next=clone(arr);
+  const a=next.find(w=>w.defId===idA), b=next.find(w=>w.defId===idB);
+  const tmp={page:a.page,col:a.col,row:a.row};
+  a.page=b.page;a.col=b.col;a.row=b.row;
+  b.page=tmp.page;b.col=tmp.col;b.row=tmp.row;
+  return next;
+}
+
+// Same-page: L slides to the opposite band; the single-column occupant(s)
+// (columnWidgets, all confined to one column) move into the column L vacates.
+function swapLWithColumn(arr,lWidget,columnWidgets){
+  const oldBandStart=lWidget.col; // 0 or 1
+  const oppBandStart=oldBandStart===0?1:0;
+  const vacatedCol=oldBandStart===0?0:2;
+  const next=clone(arr);
+  const nl=next.find(w=>w.defId===lWidget.defId);
+  nl.col=oppBandStart; nl.row=0;
+  for(const cw of columnWidgets){
+    const n=next.find(w=>w.defId===cw.defId);
+    n.col=vacatedCol;
+    if(shapeOf(cw)==='S') n.row=0; // XS keeps its own row
+  }
+  return next;
+}
+
+// Cross-page (L drag only): swap the whole 2-column band wholesale.
+// Contents of the target band don't matter — same footprint on both sides.
+function swapBand(arr,lWidget,targetPage,bandStart){
+  const originPage=lWidget.page, originBand=lWidget.col;
+  const regionWidgets=arr.filter(w=>
+    w.page===targetPage && w.col>=bandStart && w.col<bandStart+2 && w.defId!==lWidget.defId);
+  const next=clone(arr);
+  const nl=next.find(w=>w.defId===lWidget.defId);
+  nl.page=targetPage; nl.col=bandStart; nl.row=0;
+  for(const rw of regionWidgets){
+    const n=next.find(w=>w.defId===rw.defId);
+    n.page=originPage;
+    n.col=originBand+(rw.col-bandStart); // preserve relative column offset
+  }
+  return next;
+}
+
+// No L involved: column-for-column swap between S and (lone XS / stacked XS pair).
+function swapColumnContent(arr,dw,blockers){
+  const origPage=dw.page, origCol=dw.col;
+  const destPage=blockers[0].page, destCol=blockers[0].col;
+  const next=clone(arr);
+  const ndw=next.find(w=>w.defId===dw.defId);
+  ndw.page=destPage; ndw.col=destCol; if(shapeOf(dw)==='S') ndw.row=0; // XS keeps its own row
+  for(const b of blockers){
+    const nb=next.find(w=>w.defId===b.defId);
+    nb.page=origPage; nb.col=origCol; if(shapeOf(b)==='S') nb.row=0;
+  }
+  return next;
+}
+
+function hasColumnSibling(arr,dw){
+  return arr.some(w=>w.defId!==dw.defId && w.page===dw.page && w.col===dw.col && shapeOf(w)==='XS');
+}
+
+// pointerFrac: 0..1 position of the pointer across the target page's grid width.
+// Only used when the dragged widget is L, to resolve which 2-column band it targets
+// (the boundary is the page's horizontal center — not per-cell hit testing).
+function resolveSwap(arr,dragId,targetPage,rawCol,rawRow,pointerFrac){
+  const dw=arr.find(w=>w.defId===dragId);
+  if(!dw) return{ok:false,next:null};
+  const shape=shapeOf(dw);
+  const crossPage=targetPage!==dw.page;
+
+  let fcol,frow;
+  if(shape==='L'){
+    fcol = pointerFrac<0.5 ? 0 : 1;
+    frow = 0;
+  } else {
+    fcol = Math.min(rawCol, COLS-dw.cols);
+    frow = shape==='S' ? 0 : Math.min(rawRow, ROWS-dw.rows);
+  }
+
+  if(!crossPage && dw.col===fcol && dw.row===frow) return{ok:true,next:null};
+
+  const blockers=widgetsOverlapping(arr,targetPage,fcol,frow,dw.cols,dw.rows,dw.defId);
+
+  // Empty target -> plain move
+  if(blockers.length===0){
+    if(!canPlace(occFrom(arr,dw.defId),dw.cols,dw.rows,targetPage,fcol,frow)) return{ok:false,next:null};
+    return{ok:true,next:placeAt(arr,dw.defId,targetPage,fcol,frow)};
+  }
+
+  // Exact shape match -> direct position swap (any page)
+  if(blockers.length===1 && blockers[0].cols===dw.cols && blockers[0].rows===dw.rows){
+    return{ok:true,next:swapPositions(arr,dw.defId,blockers[0].defId)};
+  }
+
+  const blockerL=blockers.find(b=>shapeOf(b)==='L');
+
+  // L on one side, a single-column occupant on the other
+  if(shape==='L' || blockerL){
+    const lWidget = shape==='L' ? dw : blockerL;
+    const columnWidgets = shape==='L' ? blockers : [dw];
+
+    if(crossPage){
+      if(shape!=='L') return{ok:false,next:null}; // small widget can never swap with L across pages
+      return{ok:true,next:swapBand(arr,dw,targetPage,fcol)};
+    }
+
+    const spansOneColumn = columnWidgets.every(w=>w.col===columnWidgets[0].col);
+    if(!spansOneColumn) return{ok:false,next:null};
+
+    if(shape==='XS' && hasColumnSibling(arr,dw)) return{ok:false,next:null};
+
+    const next=swapLWithColumn(arr,lWidget,columnWidgets);
+    if(shape==='XS') next.find(w=>w.defId===dw.defId).row=frow; // drop row wins over the original row
+    return{ok:true,next};
+  }
+
+  // No L involved: whole-column swap between S and lone-XS/XS-pair
+  if(blockers.every(b=>b.col===blockers[0].col)){
+    if(shape==='XS' && hasColumnSibling(arr,dw)) return{ok:false,next:null};
+    const next=swapColumnContent(arr,dw,blockers);
+    if(shape==='XS') next.find(w=>w.defId===dw.defId).row=frow; // drop row wins over the original row
+    return{ok:true,next};
+  }
+
+  return{ok:false,next:null};
+}
+
+// ═══════════════════════════════════════════════════════
+// SHIFT LOGIC — シフト自由配置（④）— gaps allowed, no compaction.
+//
+// The dragged widget (the "anchor") is committed first, at wherever it was
+// dropped. Everything it overlaps is resolved in two phases, each run once
+// (no repeated rounds):
+//
+//   1. 空きセル探索 — every widget the anchor's drop displaced gets one
+//      chance to escape locally: up/down (XS only, since S/L already occupy
+//      both rows) then left/right, whichever direction points back toward
+//      the anchor's drag-start position is tried first. If the anchor is S
+//      or L (so its drop can displace both rows of a column at once), a
+//      vertically-stacked XS pair sharing an original column is bundled
+//      into a single unit up front and searched/moved together (left/right
+//      only) — so one twin never escapes alone while the other is left
+//      behind; if either can't find room, neither moves. Dragging an XS can
+//      never displace both rows of a column in the first place (its drop
+//      footprint is only one row), so this bundling never applies there.
+//   2. シフト処理 — whatever didn't escape goes on the シフト・キュー, in
+//      reading order, XS pairs still bundled. The queue is placed one item
+//      at a time into the next free column starting right after the
+//      anchor's footprint (rolling to the next page's column 0 when a page
+//      fills up — L rolls its whole 2-column footprint rather than split
+//      it, leaving any leftover column on the old page empty); whatever
+//      real widget is sitting at a landing spot gets bumped straight onto
+//      the back of the queue as its own (unpaired) entry — it does not get
+//      another chance at 空きセル探索, it just keeps riding the queue.
+// ═══════════════════════════════════════════════════════
+function calcShift(arr,defId,tPage,rawCol,rawRow,pointerFrac){
+  const dw=arr.find(w=>w.defId===defId);
+  if(!dw) return{ok:false,next:null};
+  const shape=shapeOf(dw);
+
+  let fcol,frow;
+  if(shape==='L'){
+    fcol = pointerFrac<0.5 ? 0 : 1;
+    frow = 0;
+  } else {
+    fcol = Math.min(rawCol, COLS-dw.cols);
+    frow = shape==='S' ? 0 : Math.min(rawRow, ROWS-dw.rows);
+  }
+
+  if(dw.page===tPage && dw.col===fcol && dw.row===frow) return{ok:true,next:null};
+
+  const originPage=dw.page, originCol=dw.col; // drag-start position — fixed reference for escape direction
+
+  const next=clone(arr);
+  const anchor=next.find(w=>w.defId===defId);
+  const displaced=widgetsOverlapping(next,tPage,fcol,frow,anchor.cols,anchor.rows,defId);
+  anchor.page=tPage; anchor.col=fcol; anchor.row=frow;
+
+  if(displaced.length===0) return{ok:true,next}; // empty target — nothing else to resolve
+
+  // ---- ① 空きセル探索（1回だけ）----
+  // 縦並びXSのユニット化は、アンカーがL/S（=両方の行を同時にどかし得る）のときだけ。
+  const anchorSpansBothRows = anchor.rows===2;
+  const displacedSorted=displaced.slice().sort((a,b)=>a.col-b.col||a.row-b.row);
+  const handled=new Set();
+  const queue=[]; // 逃げ切れなかったもの。各要素は [defId] か [defIdA,defIdB]（ペア）
+
+  for(const w0 of displacedSorted){
+    if(handled.has(w0.defId)) continue;
+    const w=next.find(x=>x.defId===w0.defId);
+    handled.add(w.defId);
+
+    let mate=null;
+    if(anchorSpansBothRows && shapeOf(w)==='XS'){
+      const mateRaw=displacedSorted.find(o=>!handled.has(o.defId)&&o.col===w0.col&&
+        shapeOf(next.find(x=>x.defId===o.defId))==='XS');
+      if(mateRaw){ mate=next.find(x=>x.defId===mateRaw.defId); handled.add(mate.defId); }
+    }
+
+    if(mate){
+      if(!tryQuickEscapePair(next,w,mate,originPage,originCol)) queue.push([w.defId,mate.defId]);
+    } else {
+      if(!tryQuickEscape(next,w,originPage,originCol)) queue.push([w.defId]);
+    }
+  }
+
+  if(queue.length===0) return{ok:true,next};
+
+  // ---- ② シフト処理（コンベア、1パス）----
+  // カーソルはアンカー直後の列から始まり、前にしか進まないので、
+  // アンカー自身の専有列と衝突することは構造上起こらない。
+  let curPage=tPage, curCol=fcol+anchor.cols;
+  if(curCol>=COLS){curPage+=1;curCol=0;}
+
+  while(queue.length){
+    const ids=queue.shift();
+    const isPair=ids.length===2;
+    const lead=next.find(x=>x.defId===ids[0]);
+    const width=isPair?1:lead.cols;
+
+    if(curCol+width>COLS){curPage+=1;curCol=0;}
+
+    const rowStart=isPair?0:lead.row;
+    const rowSpan =isPair?2:lead.rows;
+    const bumped=widgetsOverlapping(next,curPage,curCol,rowStart,width,rowSpan,null)
+      .filter(b=>!ids.includes(b.defId));
+
+    for(const id of ids){ const m=next.find(x=>x.defId===id); m.page=curPage; m.col=curCol; } // row untouched
+    curCol+=width;
+
+    for(const b of bumped) queue.push([b.defId]); // 再度ユニット化はしない
+  }
+
+  return{ok:true,next};
+}
+
+// Local escape for a single conflicting widget: up/down (XS only), then
+// left/right — whichever direction points back toward the anchor's
+// drag-start position (refPage/refCol) is tried first, so displaced widgets
+// duck out of the way the drag came from rather than always favoring one
+// fixed side.
+function tryQuickEscape(arr,w,refPage,refCol){
+  const candidates=[];
+  if(shapeOf(w)==='XS'){
+    candidates.push({col:w.col,row:w.row-1});
+    candidates.push({col:w.col,row:w.row+1});
+  }
+  const towardOrigin=(refPage-w.page)||(refCol-w.col);
+  const horiz = towardOrigin<0
+    ? [{col:w.col-1,row:w.row},{col:w.col+1,row:w.row}]
+    : [{col:w.col+1,row:w.row},{col:w.col-1,row:w.row}];
+  candidates.push(...horiz);
+
+  for(const c of candidates){
+    if(c.col<0||c.row<0||c.col+w.cols>COLS||c.row+w.rows>ROWS) continue;
+    if(canPlace(occFrom(arr,w.defId),w.cols,w.rows,w.page,c.col,c.row)){
+      w.col=c.col; w.row=c.row;
+      return true;
+    }
+  }
+  return false;
+}
+
+// Escape for a vertically-stacked XS pair, evaluated and moved as one unit —
+// left/right only (the pair already spans both rows, so there's no up/down
+// room). Both members move together or neither does.
+function tryQuickEscapePair(arr,wA,wB,refPage,refCol){
+  const towardOrigin=(refPage-wA.page)||(refCol-wA.col);
+  const cands = towardOrigin<0 ? [wA.col-1,wA.col+1] : [wA.col+1,wA.col-1];
+  const occ=occFromExcluding(arr,new Set([wA.defId,wB.defId]));
+  for(const c of cands){
+    if(c<0||c+1>COLS) continue;
+    if(canPlace(occ,1,2,wA.page,c,0)){
+      wA.col=c; wB.col=c;
+      return true;
+    }
+  }
+  return false;
+}
+
+// ═══════════════════════════════════════════════════════
+// DOM REFS
+// ═══════════════════════════════════════════════════════
+const header=document.getElementById('header');
+const track=document.getElementById('track');
+const pagesContainer=document.getElementById('pages-container');
+const widgetLayer=document.getElementById('widget-layer');
+const dotsEl=document.getElementById('dots');
+const dropPreview=document.getElementById('drop-preview');
+const floatEl=document.getElementById('float-widget');
+const floatName=document.getElementById('float-name');
+const floatEmoji=document.getElementById('float-emoji');
+const toastEl=document.getElementById('toast');
+const lpRing=document.getElementById('lp-ring');
+const viewport=document.getElementById('viewport');
+const modalOverlay=document.getElementById('modal-overlay');
+
+// ═══════════════════════════════════════════════════════
+// TOAST / LP-RING
+// ═══════════════════════════════════════════════════════
+let toastT;
+function toast(msg,ms=2200){
+  toastEl.textContent=msg;toastEl.classList.add('show');
+  clearTimeout(toastT);toastT=setTimeout(()=>toastEl.classList.remove('show'),ms);
+}
+function showLpRing(cx,cy){
+  const r=22;
+  lpRing.style.cssText=`width:${r*2}px;height:${r*2}px;left:${cx-r}px;top:${cy-r}px;`;
+  lpRing.classList.remove('go');void lpRing.offsetWidth;lpRing.classList.add('go');
+}
+
+// ═══════════════════════════════════════════════════════
+// PAGING / FLICK
+// ═══════════════════════════════════════════════════════
+function goToPage(p,animate=true){
+  const total=requiredPages();
+  p=Math.max(0,Math.min(total-1,p));
+  currentPage=p;
+  if(!animate) track.style.transition='none';
+  track.style.transform=`translateX(${-p*PAGE_STRIDE}px)`;
+  if(!animate){void track.offsetWidth;track.style.transition='';}
+  renderDots();
+}
+function renderDots(){
+  const total=requiredPages();
+  dotsEl.innerHTML='';
+  for(let i=0;i<total;i++){
+    const d=document.createElement('div');
+    d.className='dot'+(i===currentPage?' active':'');
+    dotsEl.appendChild(d);
+  }
+}
+
+let flickState=null;
+function startFlick(e){if(dragState)return;flickState={startX:e.clientX,startY:e.clientY,startPage:currentPage,axis:null};}
+function updateFlick(e){
+  if(!flickState||dragState)return;
+  const dx=e.clientX-flickState.startX,dy=e.clientY-flickState.startY;
+  if(!flickState.axis&&(Math.abs(dx)>6||Math.abs(dy)>6))
+    flickState.axis=Math.abs(dx)>=Math.abs(dy)?'h':'v';
+  if(flickState.axis==='h'){
+    track.style.transition='none';
+    track.style.transform=`translateX(${-flickState.startPage*PAGE_STRIDE+dx}px)`;
+  }
+}
+function endFlick(e){
+  if(!flickState)return;
+  const dx=e.clientX-flickState.startX;
+  if(flickState.axis==='h'&&Math.abs(dx)>40) goToPage(flickState.startPage+(dx<0?1:-1));
+  else goToPage(flickState.startPage);
+  flickState=null;
+}
+viewport.addEventListener('mousedown',startFlick);
+window.addEventListener('mousemove',e=>{if(flickState&&!dragState)updateFlick(e);});
+window.addEventListener('mouseup',  e=>{if(flickState)endFlick(e);});
+
+// ═══════════════════════════════════════════════════════
+// RENDER
+// ═══════════════════════════════════════════════════════
+function render(displayArr,ghostDefId=null){
+  const arr=displayArr||placed;
+  renderHeader();
+  renderPages(arr,ghostDefId);
+  renderDots();
+}
+
+function renderHeader(){
+  const existing=[...header.querySelectorAll('.add-btn')];
+  existing.forEach(b=>b.remove());
+  const rightEl=document.getElementById('header-right');
+  DEFS.forEach(def=>{
+    const btn=document.createElement('button');
+    btn.className='add-btn'+(isPlaced(def.id)?' disabled':'');
+    btn.dataset.defId=def.id;
+    btn.innerHTML=`<span class="bi">${def.emoji}</span><span class="bl">${def.name}</span><span class="bs">${def.cols}×${def.rows}</span>`;
+    if(!isPlaced(def.id)){
+      btn.addEventListener('click',onAddBtnClick);
+      btn.addEventListener('mousedown',onAddBtnMousedown);
+    }
+    header.insertBefore(btn,rightEl);
+  });
+}
+
+function widgetHTML(def){
+  return `<div class="widget-inner"><div class="widget-name">${def.name}</div><div class="widget-content"><span class="widget-emoji">${def.emoji}</span></div></div>`;
+}
+
+// Every widget's left/top is expressed relative to #track's own box (not to
+// any individual page), regardless of which page it's actually on. This is
+// what lets a widget animate smoothly across a page boundary — it's the same
+// DOM node the whole time, just a left value that happens to cross a page
+// width, never a reparent into a different page's container.
+function widgetLayerOrigin(){
+  const g0=pagesContainer.querySelector('.grid[data-page-idx="0"]');
+  if(!g0) return{left:0,top:0};
+  const tr=track.getBoundingClientRect(), gr=g0.getBoundingClientRect();
+  return{left:gr.left-tr.left, top:gr.top-tr.top}; // transform-invariant: both rects shift by the same amount
+}
+function widgetPos(origin,page,col,row){
+  return{left:origin.left+page*PAGE_STRIDE+cellX(col), top:origin.top+cellY(row)};
+}
+
+function renderPages(arr,ghostDefId=null){
+  const total=requiredPages(arr);
+  track.style.width=(TRACK_PAD+total*(PAGE_CARD_W+BETWEEN_GAP)+SW)+'px';
+  pagesContainer.innerHTML='';
+
+  for(let p=0;p<total;p++){
+    const pageEl=document.createElement('div');
+    pageEl.className='page';pageEl.dataset.pageIdx=p;
+    const lbl=document.createElement('div');
+    lbl.className='page-label';lbl.textContent=`Page ${p+1}`;
+    pageEl.appendChild(lbl);
+
+    const grid=document.createElement('div');
+    grid.className='grid';grid.dataset.pageIdx=p;
+
+    for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
+      const gc=document.createElement('div');gc.className='ghost-cell';grid.appendChild(gc);
+    }
+
+    if(!arr.some(w=>w.page===p)){
+      const hint=document.createElement('div');
+      hint.className='empty-hint';hint.textContent='ウィジェットをここに追加';
+      grid.appendChild(hint);
+    }
+
+    pageEl.appendChild(grid);pagesContainer.appendChild(pageEl);
+  }
+
+  renderWidgets(arr,ghostDefId);
+
+  track.style.transition='none';
+  track.style.transform=`translateX(${-currentPage*PAGE_STRIDE}px)`;
+  void track.offsetWidth;track.style.transition='';
+}
+
+// Full rebuild of the widget layer (used outside of active dragging — reset,
+// add, delete, resize, page nav, mode switch, and the final commit on drop).
+// During a drag, applyPreviewFrame updates these same elements in place
+// instead, which is what actually drives the animation.
+function renderWidgets(arr,ghostDefId=null){
+  widgetLayer.innerHTML='';
+  const origin=widgetLayerOrigin();
+
+  // The dragged widget is hidden at its origin — the float widget under the
+  // cursor and the drop-preview highlight represent it while dragging.
+  arr.filter(w=>w.defId!==ghostDefId).forEach(w=>{
+    const def=DEFS[w.defId];
+    const el=document.createElement('div');
+    el.className='widget';
+    el.dataset.defId=w.defId;
+    const pos=widgetPos(origin,w.page,w.col,w.row);
+    el.style.cssText=`left:${pos.left}px;top:${pos.top}px;width:${wPx(w.cols)}px;height:${hPx(w.rows)}px;`;
+    el.innerHTML=widgetHTML(def)+
+      `<button class="widget-del" data-def-id="${w.defId}">−</button>`+
+      `<div class="handle handle-top"    data-dir="top"></div>`+
+      `<div class="handle handle-bottom" data-dir="bottom"></div>`+
+      `<div class="handle handle-left"   data-dir="left"></div>`+
+      `<div class="handle handle-right"  data-dir="right"></div>`;
+    el.querySelector('.widget-del').addEventListener('click',e=>{
+      e.stopPropagation();
+      placed=placed.filter(p=>p.defId!==w.defId);
+      render();
+      toast(`${def.name} を削除`);
+    });
+    el.querySelectorAll('.handle').forEach(h=>{
+      h.addEventListener('mousedown',e=>{e.stopPropagation();startResize(e,w.defId,h.dataset.dir);});
+    });
+    el.addEventListener('mousedown',e=>{
+      if(e.target.classList.contains('handle')||e.target.classList.contains('widget-del')) return;
+      // No stopPropagation: the mousedown also bubbles up to the viewport's
+      // startFlick, so swiping across a widget pages the track just like
+      // swiping empty space. The long-press below is cancelled the moment
+      // that swipe motion is detected, so the two never both activate.
+      startWidgetLongPress(e,w.defId);
+    });
+    widgetLayer.appendChild(el);
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+// DROP PREVIEW
+// ═══════════════════════════════════════════════════════
+function showDropPreview(pageIdx,col,row,cols,rows,blocked){
+  const gridEl=track.querySelector(`.grid[data-page-idx="${pageIdx}"]`);
+  if(!gridEl){dropPreview.style.display='none';return;}
+  const gr=gridEl.getBoundingClientRect();
+  const vr=viewport.getBoundingClientRect();
+  const left=gr.left-vr.left+cellX(col);
+  const top =gr.top -vr.top +cellY(row);
+  dropPreview.style.cssText=`display:block;left:${left}px;top:${top}px;width:${wPx(cols)}px;height:${hPx(rows)}px;`;
+  dropPreview.classList.toggle('blocked',blocked);
+}
+
+// ═══════════════════════════════════════════════════════
+// DRAG
+// ═══════════════════════════════════════════════════════
+let dragState=null;
+let addBtnLpTimer=null,addBtnLpState=null;
+
+function onAddBtnClick(e){
+  if(addBtnLpState&&addBtnLpState.dragged)return;
+  addWidgetAuto(+e.currentTarget.dataset.defId);
+}
+function onAddBtnMousedown(e){
+  if(e.button!==0)return;e.preventDefault();
+  const defId=+e.currentTarget.dataset.defId;
+  addBtnLpState={defId,dragged:false};
+  showLpRing(e.clientX,e.clientY);
+  addBtnLpTimer=setTimeout(()=>{
+    if(!addBtnLpState)return;
+    addBtnLpState.dragged=true;
+    beginAddDrag(defId,e.clientX,e.clientY);
+  },LONG_PRESS_MS);
+  const cancel=()=>{clearTimeout(addBtnLpTimer);if(addBtnLpState&&!addBtnLpState.dragged)addBtnLpState=null;};
+  window.addEventListener('mouseup',cancel,{once:true});
+}
+
+let widgetLpTimer=null,widgetLpState=null;
+function startWidgetLongPress(e,defId){
+  if(e.button!==0)return;e.preventDefault();
+  widgetLpState={defId,cx:e.clientX,cy:e.clientY};
+  showLpRing(e.clientX,e.clientY);
+  const onMove=mv=>{
+    if(!widgetLpState)return;
+    if(Math.hypot(mv.clientX-widgetLpState.cx,mv.clientY-widgetLpState.cy)>6){
+      clearTimeout(widgetLpTimer);widgetLpState=null;
+      window.removeEventListener('mousemove',onMove);
+    }
+  };
+  const onUp=()=>{clearTimeout(widgetLpTimer);widgetLpState=null;window.removeEventListener('mousemove',onMove);};
+  window.addEventListener('mousemove',onMove);
+  window.addEventListener('mouseup',onUp,{once:true});
+  setTimeout(()=>{if(widgetLpState)document.querySelector(`.widget[data-def-id="${defId}"]`)?.classList.add('lifting');},350);
+  widgetLpTimer=setTimeout(()=>{
+    if(!widgetLpState)return;
+    window.removeEventListener('mousemove',onMove);
+    document.querySelector(`.widget[data-def-id="${defId}"]`)?.classList.remove('lifting');
+    beginWidgetDrag(defId,widgetLpState.cx,widgetLpState.cy);
+    widgetLpState=null;
+  },LONG_PRESS_MS);
+}
+
+// Every page's grid sits at the same vertical position (cards are centered as
+// a row), so one grid's bounding rect gives the valid Y range for all of them.
+function gridYBounds(){
+  const g=document.querySelector('.grid');
+  return g?{yMin:g.getBoundingClientRect().top,yMax:g.getBoundingClientRect().bottom}:{yMin:-Infinity,yMax:Infinity};
+}
+
+function beginAddDrag(defId,cx,cy){
+  const def=DEFS[defId];
+  const w=wPx(def.cols),h=hPx(def.rows);
+  floatEl.style.width=w+'px';floatEl.style.height=h+'px';
+  floatName.textContent=def.name;floatEmoji.textContent=def.emoji;
+  floatEl.style.display='block';
+  dragState={defId,fromAdd:true,cols:def.cols,rows:def.rows,offX:w/2,offY:h/2,...gridYBounds()};
+  moveFloat(cx,cy);
+  window.addEventListener('mousemove',onDragMove);
+  window.addEventListener('mouseup',onDragEnd);
+}
+
+function beginWidgetDrag(defId,cx,cy){
+  const pw=placed.find(p=>p.defId===defId);if(!pw)return;
+  const w=wPx(pw.cols),h=hPx(pw.rows);
+  floatEl.style.width=w+'px';floatEl.style.height=h+'px';
+  floatName.textContent=DEFS[defId].name;floatEmoji.textContent=DEFS[defId].emoji;
+  floatEl.style.display='block';
+  dragState={defId,fromAdd:false,cols:pw.cols,rows:pw.rows,offX:w/2,offY:h/2,...gridYBounds()};
+  moveFloat(cx,cy);
+  render(placed,defId);
+  window.addEventListener('mousemove',onDragMove);
+  window.addEventListener('mouseup',onDragEnd);
+}
+
+function moveFloat(cx,cy){
+  floatEl.style.left=(cx-dragState.offX)+'px';
+  floatEl.style.top= (cy-dragState.offY)+'px';
+}
+
+// Live drag-preview reposition: nudges the already-rendered widget elements to
+// their preview spot in place (like iOS icon rearrange) so the CSS transition
+// tweens from wherever they're currently displayed, not from their pre-drag
+// slot. Since every widget's left/top is expressed relative to #track as a
+// whole (see widgetPos), moving a widget to a different page is just a
+// bigger left offset on the same DOM node — it animates exactly like a
+// same-page move, no special-casing needed.
+function applyPreviewFrame(ghostDefId,previewArr){
+  const els={};
+  widgetLayer.querySelectorAll('.widget[data-def-id]').forEach(el=>{els[el.dataset.defId]=el;});
+  const displayArr=previewArr||placed;
+  const origin=widgetLayerOrigin();
+  placed.forEach(w=>{
+    if(w.defId===ghostDefId) return;
+    const el=els[w.defId];
+    if(!el) return;
+    const dw=displayArr.find(x=>x.defId===w.defId)||w;
+    const pos=widgetPos(origin,dw.page,dw.col,dw.row);
+    el.style.left=pos.left+'px';
+    el.style.top =pos.top+'px';
+  });
+}
+
+let lastHitKey='';
+function onDragMove(e){
+  if(!dragState)return;
+  // Clamp the effective Y to the grid's own vertical range so the dragged
+  // widget (and the hit test) can never leave the board, no matter how far
+  // the cursor drifts above/below it — removes the "off-board, then back in
+  // from a totally different spot" case entirely.
+  const cy=Math.min(Math.max(e.clientY,dragState.yMin),dragState.yMax);
+  moveFloat(e.clientX,cy);
+  const hit=hitTestGrid(e.clientX,cy);
+  if(!hit){dropPreview.style.display='none';return;}
+
+  const{pageIdx:tPage,col:tCol,row:tRow,frac}=hit;
+  const{defId,cols,rows,fromAdd}=dragState;
+  const key=`${tPage},${tCol},${tRow}`;
+  if(key===lastHitKey)return;
+  lastHitKey=key;
+
+  if(fromAdd){
+    const cc=Math.min(tCol,COLS-cols), cr=Math.min(tRow,ROWS-rows);
+    const ok=canPlace(occFrom(placed),cols,rows,tPage,cc,cr);
+    render();
+    showDropPreview(tPage,cc,cr,cols,rows,!ok);
+    return;
+  }
+
+  if(mode==='shift'){
+    const{ok,next}=calcShift(placed,defId,tPage,tCol,tRow,frac);
+    applyPreviewFrame(defId,ok?next:null);
+    const target=(ok&&next)?next.find(w=>w.defId===defId):placed.find(w=>w.defId===defId);
+    showDropPreview(target.page,target.col,target.row,target.cols,target.rows,false);
+    return;
+  }
+
+  const{ok,next}=resolveSwap(placed,defId,tPage,tCol,tRow,frac);
+  applyPreviewFrame(defId,ok?next:null); // reads pre-commit `placed`, so this must run before any commit below
+
+  if(mode==='live-swap'&&ok&&next) placed=next; // apply immediately — this hover's swap is now real, not just previewed
+
+  const pw=placed.find(w=>w.defId===defId);
+  if(ok&&next){
+    const fw=next.find(w=>w.defId===defId);
+    showDropPreview(fw.page,fw.col,fw.row,fw.cols,fw.rows,false);
+  } else if(ok){
+    showDropPreview(pw.page,pw.col,pw.row,pw.cols,pw.rows,false);
+  } else {
+    const shape=shapeOf(pw);
+    const rawCol = shape==='L' ? (frac<0.5?0:1) : Math.min(tCol,COLS-pw.cols);
+    const rawRow = shape==='XS' ? Math.min(tRow,ROWS-pw.rows) : 0;
+    showDropPreview(tPage,rawCol,rawRow,pw.cols,pw.rows,true);
+  }
+}
+
+function onDragEnd(e){
+  window.removeEventListener('mousemove',onDragMove);
+  window.removeEventListener('mouseup',onDragEnd);
+  dropPreview.style.display='none';
+  floatEl.style.display='none';
+  lastHitKey='';
+
+  const cy=Math.min(Math.max(e.clientY,dragState.yMin),dragState.yMax);
+  const hit=hitTestGrid(e.clientX,cy);
+  const ds=dragState;dragState=null;
+
+  if(ds.fromAdd){
+    if(hit){
+      const{pageIdx:tPage,col:tCol,row:tRow}=hit;
+      const cc=Math.min(tCol,COLS-ds.cols),cr=Math.min(tRow,ROWS-ds.rows);
+      if(canPlace(occFrom(placed),ds.cols,ds.rows,tPage,cc,cr))
+        placed.push({defId:ds.defId,page:tPage,col:cc,row:cr,cols:ds.cols,rows:ds.rows});
+      else toast('スペースがありません');
+    }
+  } else if(mode==='shift' && hit){
+    const{pageIdx:tPage,col:tCol,row:tRow,frac}=hit;
+    const{ok,next}=calcShift(placed,ds.defId,tPage,tCol,tRow,frac);
+    if(ok&&next) placed=next;
+  } else if(mode!=='live-swap' && hit){
+    const{pageIdx:tPage,col:tCol,row:tRow,frac}=hit;
+    const{ok,next}=resolveSwap(placed,ds.defId,tPage,tCol,tRow,frac);
+    if(ok&&next) placed=next;
+  }
+  // live-swap: nothing left to do — every valid hover already committed live.
+  render();
+}
+
+// ═══════════════════════════════════════════════════════
+// HIT TEST — uses grid data attribute for page index
+// ═══════════════════════════════════════════════════════
+function hitTestGrid(cx,cy){
+  for(const g of document.querySelectorAll('.grid')){
+    const r=g.getBoundingClientRect();
+    if(cx<r.left||cx>r.right||cy<r.top||cy>r.bottom) continue;
+    const col=Math.floor((cx-r.left)/(CELL_W+GAP));
+    const row=Math.floor((cy-r.top )/(CELL_H+GAP));
+    if(col>=COLS||row>=ROWS) continue;
+    const frac=(cx-r.left)/r.width;
+    return{gridEl:g,pageIdx:+g.dataset.pageIdx,col,row,frac};
+  }
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════
+// ADD WIDGET
+// ═══════════════════════════════════════════════════════
+function addWidgetAuto(defId){
+  if(isPlaced(defId))return;
+  const def=DEFS[defId];
+  const pos=firstFit(placed,def.cols,def.rows);
+  placed.push({defId,...pos,cols:def.cols,rows:def.rows});
+  currentPage=pos.page;render();
+  toast(`${def.name} を追加`);
+}
+
+// ═══════════════════════════════════════════════════════
+// RESIZE — only XS(1x1) / S(1x2) / L(2x2) are valid shapes
+// ═══════════════════════════════════════════════════════
+const isValidShape=(c,r)=>(c===1&&r===1)||(c===1&&r===2)||(c===2&&r===2);
+
+let resizeState=null;
+function startResize(e,defId,dir){
+  e.preventDefault();
+  const pw=placed.find(p=>p.defId===defId);
+  resizeState={defId,dir,sx:e.clientX,sy:e.clientY,oc:pw.cols,or:pw.rows};
+  window.addEventListener('mousemove',onResizeMove);
+  window.addEventListener('mouseup',onResizeEnd);
+}
+function onResizeMove(e){
+  if(!resizeState)return;
+  const{defId,dir,sx,sy,oc,or}=resizeState;
+  const pw=placed.find(p=>p.defId===defId);
+  const dx=e.clientX-sx,dy=e.clientY-sy;
+  let nc=oc,nr=or;
+  if(dir==='right' )nc=Math.max(1,Math.min(MAX_WIDGET_COLS,oc+Math.round(dx/(CELL_W+GAP))));
+  if(dir==='bottom')nr=Math.max(1,Math.min(ROWS,or+Math.round(dy/(CELL_H+GAP))));
+  if(dir==='left'  )nc=Math.max(1,Math.min(MAX_WIDGET_COLS,oc-Math.round(dx/(CELL_W+GAP))));
+  if(dir==='top'   )nr=Math.max(1,Math.min(ROWS,or-Math.round(dy/(CELL_H+GAP))));
+  if((nc!==pw.cols||nr!==pw.rows)&&isValidShape(nc,nr)&&canPlace(occFrom(placed,defId),nc,nr,pw.page,pw.col,pw.row)){
+    pw.cols=nc;pw.rows=nr;render();
+  }
+}
+function onResizeEnd(){
+  window.removeEventListener('mousemove',onResizeMove);
+  window.removeEventListener('mouseup',onResizeEnd);
+  resizeState=null;
+}
+
+// ═══════════════════════════════════════════════════════
+// MODE BAR
+// ═══════════════════════════════════════════════════════
+document.querySelectorAll('.mode-btn').forEach(btn=>{
+  if(btn.classList.contains('mode-locked')) return; // 未実装（検討中）
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('.mode-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');mode=btn.dataset.mode;
+    toast(`ロジック: ${btn.textContent}`);
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// RESET / HELP
+// ═══════════════════════════════════════════════════════
+document.getElementById('btn-reset').addEventListener('click',()=>{
+  placed=clone(INITIAL_PLACED);currentPage=0;render();toast('リセットしました');
+});
+document.getElementById('btn-help').addEventListener('click',()=>{
+  modalOverlay.classList.add('open');
+});
+document.getElementById('modal-close').addEventListener('click',()=>{
+  modalOverlay.classList.remove('open');
+});
+modalOverlay.addEventListener('click',e=>{
+  if(e.target===modalOverlay) modalOverlay.classList.remove('open');
+});
+
+// ═══════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════
+placed=clone(INITIAL_PLACED);
+render();
+toast('0.5秒長押しでドラッグ ／ 左右フリックでページ切替',3500);
+</script>
+</body>
+</html>
