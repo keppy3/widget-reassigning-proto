@@ -184,8 +184,8 @@ body { width:var(--sw); height:var(--sh); overflow:hidden; background:var(--bg);
 <div id="mode-bar">
   <span>並び替えロジック</span>
   <button class="mode-btn active" data-mode="shift">シフト自由配置</button>
-  <button class="mode-btn mode-locked" data-mode="shift-left" disabled>シフト左詰め</button>
-  <button class="mode-btn mode-locked" data-mode="shift-strict-left" disabled>シフト真左詰め</button>
+  <button class="mode-btn" data-mode="shift-unit">シフト左詰め</button>
+  <button class="mode-btn" data-mode="shift-order">シフト左・上詰め</button>
   <button class="mode-btn" data-mode="swap">スワップ</button>
   <button class="mode-btn" data-mode="live-swap">リアルタイムスワップ</button>
 </div>
@@ -196,17 +196,8 @@ body { width:var(--sw); height:var(--sh); overflow:hidden; background:var(--bg);
 <!-- SPEC MODAL -->
 <div id="modal-overlay">
   <div id="modal">
-    <h2>② スワップ 仕様（3列×2行 / XS=1×1・S=1×2・L=2×2）</h2>
-    <ul>
-      <li><b>同じ形同士</b>（XS⇔XS, S⇔S, L⇔L）は常に交換可能。ページを跨いでもOK。</li>
-      <li><b>空きマス</b>にドロップした場合は移動のみ。</li>
-      <li><b>S ⇔ 1列分の中身</b>（単体XS / 縦に並んだXS2個）は列ごと交換。ページを跨いでもOK。
-        ただしドラッグ中のXSと同じ列にもう1つXSがいる場合（抜けても列が空にならない）は不可。</li>
-      <li><b>L ⇔ 1列分の中身</b>（単体XS / 縦に並んだXS2個 / S）は、同ページであればLのどの列にドロップしても同じ結果（Lは反対側の列へスライド、中身はLが空けた列へ）。
-        ただしドラッグ中のXSと同じ列にもう1つXSがいる場合は不可。</li>
-      <li><b>Lが絡む交換がページを跨ぐ場合</b>：Lをドラッグする側からは「ドロップ先の2列分をまるごと交換」で常に成立する。
-        逆にXS/Sをドラッグしてページを跨いでLと交換することは、周辺列の空き状況に関わらず常に不可。</li>
-    </ul>
+    <h2 id="modal-title"></h2>
+    <ul id="modal-body"></ul>
     <button id="modal-close">閉じる</button>
   </div>
 </div>
@@ -240,6 +231,8 @@ const INITIAL_PLACED=[
   {defId:5,page:0,col:0,row:1,cols:1,rows:1},
   {defId:1,page:1,col:0,row:0,cols:1,rows:2},
   {defId:3,page:1,col:1,row:0,cols:1,rows:1},
+  {defId:8,page:1,col:1,row:1,cols:1,rows:1},
+  {defId:6,page:1,col:2,row:0,cols:1,rows:1}, // フォトを初期状態だけXS(1x1)として配置
 ];
 
 // ═══════════════════════════════════════════════════════
@@ -490,7 +483,7 @@ function calcShift(arr,defId,tPage,rawCol,rawRow,pointerFrac){
     frow = shape==='S' ? 0 : Math.min(rawRow, ROWS-dw.rows);
   }
 
-  if(dw.page===tPage && dw.col===fcol && dw.row===frow) return{ok:true,next:null};
+  if(dw.page===tPage && dw.col===fcol && dw.row===frow) return{ok:true,next:null,fcol,frow};
 
   const originPage=dw.page, originCol=dw.col; // drag-start position — fixed reference for escape direction
 
@@ -499,7 +492,7 @@ function calcShift(arr,defId,tPage,rawCol,rawRow,pointerFrac){
   const displaced=widgetsOverlapping(next,tPage,fcol,frow,anchor.cols,anchor.rows,defId);
   anchor.page=tPage; anchor.col=fcol; anchor.row=frow;
 
-  if(displaced.length===0) return{ok:true,next}; // empty target — nothing else to resolve
+  if(displaced.length===0) return{ok:true,next,fcol,frow}; // empty target — nothing else to resolve
 
   // ---- ① 空きセル探索（1回だけ）----
   // 縦並びXSのユニット化は、アンカーがL/S（=両方の行を同時にどかし得る）のときだけ。
@@ -527,7 +520,7 @@ function calcShift(arr,defId,tPage,rawCol,rawRow,pointerFrac){
     }
   }
 
-  if(queue.length===0) return{ok:true,next};
+  if(queue.length===0) return{ok:true,next,fcol,frow};
 
   // ---- ② シフト処理（コンベア、1パス）----
   // カーソルはアンカー直後の列から始まり、前にしか進まないので、
@@ -554,7 +547,7 @@ function calcShift(arr,defId,tPage,rawCol,rawRow,pointerFrac){
     for(const b of bumped) queue.push([b.defId]); // 再度ユニット化はしない
   }
 
-  return{ok:true,next};
+  return{ok:true,next,fcol,frow};
 }
 
 // Local escape for a single conflicting widget: up/down (XS only), then
@@ -599,6 +592,286 @@ function tryQuickEscapePair(arr,wA,wB,refPage,refCol){
     }
   }
   return false;
+}
+
+// ═══════════════════════════════════════════════════════
+// SEQUENTIAL LAYOUT — shared by ② and ③.
+//
+// Packs an ordered list of "items" top-to-bottom within a column, then
+// left-to-right across columns and pages. Each item is
+// {ids:[defId] or [defId,defId2], cols, footprintRows}: `cols`/`footprintRows`
+// say how much space the item reserves for cursor-advancement purposes,
+// which can be more than what its real widget(s) occupy (② always reserves
+// a full 2-row column, even for a lone XS, so the layout for ② never hits
+// the misalignment case below). An item needing the full column height that
+// lands mid-column (only possible in ③, where a lone XS can leave a
+// dangling single row behind it) skips ahead to the next column, leaving
+// that dangling row permanently empty — the same "skip and leave a gap"
+// idea as the established L page-rollover rule, just at column grain.
+// ═══════════════════════════════════════════════════════
+function layoutSequential(items){
+  let page=0, col=0, row=0;
+  const placements=[];
+  for(const item of items){
+    if(item.footprintRows>=ROWS && row!==0){
+      col+=1; row=0;
+      if(col>=COLS){ page+=1; col=0; }
+    }
+    if(col+item.cols>COLS){ page+=1; col=0; row=0; }
+    item.ids.forEach((id,i)=>{
+      // Paired unit (② XS+XS): each member keeps its index-order row.
+      // Solo unit reserving the full column (② S/L/XS+空き): keeps its
+      // rowHint if it has one (an existing XS+空きユニット must not silently
+      // auto-pack upward on an unrelated drag elsewhere — only ③ does that),
+      // defaulting to row 0 for a freshly-created unit.
+      // Solo item NOT reserving the full column (③'s lone XS): follows the
+      // cursor's current row, which is what makes ③'s auto-pack-upward work.
+      const r = item.ids.length>1 ? i
+        : item.footprintRows>=ROWS ? (item.rowHint ?? 0)
+        : row;
+      placements.push({defId:id, page, col, row:r});
+    });
+    row+=item.footprintRows;
+    if(row>=ROWS){ col+=item.cols; row=0; }
+  }
+  return placements;
+}
+
+// ═══════════════════════════════════════════════════════
+// SHIFT LOGIC — シフト左詰め（②）— unit-level order, gapless except the
+// shared L page-rollover rule.
+//
+// Every column is one of four units: S / L / XS+XS (two real XS sharing a
+// column) / XS+空き (one real XS, its column-mate row permanently reserved
+// but empty). Units — never bare widgets — are what carry an order. On
+// drop: if dragging an XS onto an XS+空き unit's own column, it merges
+// straight into that unit (nudging the existing XS to its own free row
+// first if the drop landed exactly on it) — the unit's order doesn't
+// change. Otherwise the dragged widget becomes a fresh unit inserted at
+// #N+1, where N is how many units sit left of the drop column, and
+// everything is repacked via layoutSequential.
+// ═══════════════════════════════════════════════════════
+function buildUnits(arr){
+  const sorted=arr.slice().sort((a,b)=>a.page-b.page||a.col-b.col||a.row-b.row);
+  const units=[]; const handled=new Set();
+  for(const w of sorted){
+    if(handled.has(w.defId)) continue;
+    handled.add(w.defId);
+    if(shapeOf(w)==='XS'){
+      const mate=sorted.find(o=>!handled.has(o.defId)&&o.page===w.page&&o.col===w.col&&shapeOf(o)==='XS');
+      if(mate){ handled.add(mate.defId); units.push({kind:'xs-xs',ids:[w.defId,mate.defId],page:w.page,col:w.col,cols:1}); }
+      else units.push({kind:'xs-empty',ids:[w.defId],page:w.page,col:w.col,cols:1,row:w.row});
+    } else {
+      units.push({kind:shapeOf(w)==='L'?'l':'s',ids:[w.defId],page:w.page,col:w.col,cols:w.cols});
+    }
+  }
+  return units;
+}
+
+function calcShiftUnit(arr,defId,tPage,rawCol,rawRow,pointerFrac){
+  const dw=arr.find(w=>w.defId===defId);
+  if(!dw) return{ok:false,next:null};
+  const shape=shapeOf(dw);
+
+  let fcol,frow;
+  if(shape==='L'){ fcol=pointerFrac<0.5?0:1; frow=0; }
+  else { fcol=Math.min(rawCol,COLS-dw.cols); frow=shape==='S'?0:Math.min(rawRow,ROWS-dw.rows); }
+
+  const others=arr.filter(w=>w.defId!==defId);
+  const units=buildUnits(others);
+
+  // 例外：XSをドラッグ中、ドロップ先の列がXS+空きユニットなら、順番を変えずそこへ収める。
+  if(shape==='XS'){
+    const hitUnit=units.find(u=>u.kind==='xs-empty'&&u.page===tPage&&u.col===fcol);
+    if(hitUnit){
+      const next=clone(arr);
+      const nd=next.find(w=>w.defId===defId);
+      const existing=next.find(w=>w.defId===hitUnit.ids[0]);
+      if(frow===existing.row) existing.row=1-existing.row; // どかす（既存メンバーの実際の行を見て、空いている方へ）
+      nd.page=tPage; nd.col=fcol; nd.row=frow;
+      return{ok:true,next,fcol,frow};
+    }
+  }
+
+  // ドラッグ中のユニットを除いた「残り」を、数える前に一度隙間なく詰め直す。除いた側の
+  // 古い座標のまま数えると（＝ドラッグ中だったユニットが抜けた隙間を詰めずに数えると）、
+  // 挿入位置の計算がその隙間ぶんズレて、計算後の実際の着地点がカーソル位置と一致しなく
+  // なる。これが「カーソルとドロップ領域が一致しない」の真因だったので、表示ではなく
+  // ここを直す。
+  const cleanPlacements=layoutSequential(units.map(u=>({ids:u.ids,cols:u.cols,footprintRows:ROWS})));
+  const cleanIdxOf={};
+  for(const u of units){
+    const p=cleanPlacements.find(pl=>pl.defId===u.ids[0]);
+    cleanIdxOf[u.ids[0]]=p.page*COLS+p.col;
+  }
+
+  const targetIdx=tPage*COLS+fcol;
+  let n=0;
+  for(const u of units){ if(cleanIdxOf[u.ids[0]]<targetIdx) n++; }
+
+  const dwUnit={ids:[defId],cols:dw.cols,footprintRows:ROWS,rowHint:frow}; // fresh unit — lands on whichever row was dropped on (XS only; S/L's frow is always 0)
+  const newUnits=[...units.slice(0,n),dwUnit,...units.slice(n)];
+
+  const placements=layoutSequential(newUnits.map(u=>({ids:u.ids,cols:u.cols,footprintRows:ROWS,rowHint:u.rowHint??u.row})));
+  const next=clone(arr);
+  for(const p of placements){ const w=next.find(x=>x.defId===p.defId); w.page=p.page; w.col=p.col; w.row=p.row; }
+  return{ok:true,next};
+}
+
+// ═══════════════════════════════════════════════════════
+// SHIFT LOGIC — シフト左・上詰め（③）— per-widget order, gapless except
+// the shared L page-rollover rule (and, as a consequence of packing at
+// per-widget grain, a lone XS can leave a single dangling row behind it —
+// see layoutSequential's comment).
+//
+// N = how many widgets sit at a cell-index left of the drop cell (using
+// the セルの構成とインデックス numbering); the dragged widget's new order
+// is #N+1. Everything is then repacked via layoutSequential.
+// ═══════════════════════════════════════════════════════
+function calcShiftOrder(arr,defId,tPage,rawCol,rawRow,pointerFrac){
+  const dw=arr.find(w=>w.defId===defId);
+  if(!dw) return{ok:false,next:null};
+  const shape=shapeOf(dw);
+
+  const others=arr.filter(w=>w.defId!==defId)
+    .slice().sort((a,b)=>a.page-b.page||a.col-b.col||a.row-b.row);
+
+  let fcol,frow;
+  if(shape==='L'){ fcol=pointerFrac<0.5?0:1; frow=0; }
+  else {
+    fcol=Math.min(rawCol,COLS-dw.cols);
+    frow=shape==='S'?0:Math.min(rawRow,ROWS-dw.rows);
+    // XSがS/Lと重なっているときは、下段にホバーしていても上段（そのS/L自身の位置）扱いにする。
+    // S/Lは行で分割できない1つの塊なので、行1をまたぐこと自体に意味が無い。
+    if(shape==='XS' && others.some(w=>w.page===tPage&&w.col===fcol&&w.rows===ROWS)) frow=0;
+  }
+
+  // ②と同じ理由で、数える前にドラッグ中を除いた「残り」を隙間なく詰め直しておく。
+  const cleanPlacements=layoutSequential(others.map(w=>({ids:[w.defId],cols:w.cols,footprintRows:w.rows})));
+  const cleanSlotOf={};
+  for(const p of cleanPlacements){ cleanSlotOf[p.defId]=p.page*(COLS*ROWS)+p.col*ROWS+p.row; }
+
+  const targetSlot=tPage*(COLS*ROWS)+fcol*ROWS+frow;
+  let n=0;
+  for(const w of others){ if(cleanSlotOf[w.defId]<targetSlot) n++; }
+
+  const items=[
+    ...others.slice(0,n).map(w=>({ids:[w.defId],cols:w.cols,footprintRows:w.rows})),
+    {ids:[defId],cols:dw.cols,footprintRows:dw.rows},
+    ...others.slice(n).map(w=>({ids:[w.defId],cols:w.cols,footprintRows:w.rows})),
+  ];
+
+  const placements=layoutSequential(items);
+  const next=clone(arr);
+  for(const p of placements){ const w=next.find(x=>x.defId===p.defId); w.page=p.page; w.col=p.col; w.row=p.row; }
+  return{ok:true,next};
+}
+
+// ═══════════════════════════════════════════════════════
+// RESIZE — ②③共通のルール:
+//   下/右ハンドルで拡大 … 順番はそのまま。拡大した分は自然な再配置で後続が押し出される。
+//   上/左ハンドルで拡大 … 拡大先に元々いたウィジェット（②はユニット）と順番を入れ替え、
+//                         奪われた側が押し出される。
+//   縮小（どちらのハンドルでも）… 自分の領域内が空くだけなので順番は変わらない。
+// ═══════════════════════════════════════════════════════
+
+// ②：ユニット単位。列数が変わらない（XS<->S、ユニット内部の話）場合はユニットの順位その
+// ものは動かさず、相方がいれば追い出して自分の直後の新ユニットにするだけ。列数が変わる
+// （S<->L、隣のユニットへ踏み込む話）場合だけ、上のcalcShiftUnitと同じ「起点から見て
+// 右方向なら重なった相手の直後」ルールを使う。
+function resizeUnit(arr,defId,dir,newCols,newRows){
+  const pw=arr.find(w=>w.defId===defId);
+  const others=arr.filter(w=>w.defId!==defId);
+  const units=buildUnits(others);
+
+  const insertByCol=(list,item)=>{
+    const key=item.page*COLS+item.col;
+    let idx=list.findIndex(u=>u.page*COLS+u.col>=key);
+    if(idx===-1) idx=list.length;
+    list.splice(idx,0,item);
+  };
+
+  // 行だけの変化（XS<->S）のとき、掴んだハンドルの反対側の辺を固定して、動いた側の辺から
+  // 新しい行を求める（下ハンドルなら上辺固定＝行はそのまま、上ハンドルなら下辺固定）。
+  const rowFor=nr=>dir==='top' ? pw.row+pw.rows-nr : pw.row;
+
+  let order;
+  if(newCols===pw.cols){
+    const dwUnit={ids:[defId],page:pw.page,col:pw.col,cols:newCols,rowHint:newRows>=ROWS?0:rowFor(newRows),isNew:true};
+    order=units.slice();
+    insertByCol(order,dwUnit);
+  } else {
+    let ncol=pw.col;
+    if(dir==='left') ncol-=(newCols-pw.cols);
+    if(ncol<0) return null;
+    const dwUnit={ids:[defId],page:pw.page,col:ncol,cols:newCols,rowHint:newRows>=ROWS?0:rowFor(newRows),isNew:true};
+    order=units.slice();
+    if(dir==='left'){
+      const dropStart=pw.page*COLS+ncol, dropEnd=dropStart+newCols-1;
+      const overlapIdx=order.findIndex(u=>{
+        const uStart=u.page*COLS+u.col, uEnd=uStart+u.cols-1;
+        return !(uEnd<dropStart||dropEnd<uStart);
+      });
+      if(overlapIdx!==-1) order.splice(overlapIdx,0,dwUnit);
+      else insertByCol(order,dwUnit);
+    } else {
+      insertByCol(order,dwUnit); // right、または縮小 — 自然な読み順の位置を維持
+    }
+  }
+
+  const items=order.map(u=>({ids:u.ids,cols:u.cols,footprintRows:ROWS,rowHint:u.isNew?u.rowHint:u.row}));
+  const placements=layoutSequential(items);
+  const next=clone(arr);
+  for(const p of placements){ const w=next.find(x=>x.defId===p.defId); w.page=p.page; w.col=p.col; w.row=p.row; }
+  const rw=next.find(w=>w.defId===defId); rw.cols=newCols; rw.rows=newRows;
+  return next;
+}
+
+// ③：ウィジェット単位。掴んだハンドルの方向へアンカー（col/row）を動かして新しい専有範囲
+// を求め、上/左方向ならその範囲と重なる最初のウィジェットの位置に挿入（＝順番の入れ替え）、
+// 下/右方向（または縮小）なら自分の元の順位をそのまま維持する。
+function resizeOrder(arr,defId,dir,newCols,newRows){
+  const pw=arr.find(w=>w.defId===defId);
+  if(dir==='bottom' && pw.row+newRows>ROWS) return null; // ページ内に下の行が無い
+
+  let ncol=pw.col, nrow=pw.row;
+  if(dir==='left') ncol-=(newCols-pw.cols);
+  if(dir==='top')  nrow-=(newRows-pw.rows);
+  if(ncol<0||nrow<0) return null;
+
+  const others=arr.filter(w=>w.defId!==defId).slice().sort((a,b)=>a.page-b.page||a.col-b.col||a.row-b.row);
+  const slotOf=w=>w.page*(COLS*ROWS)+w.col*ROWS+w.row;
+
+  // 上/左方向の順番入れ替えが要るのは、その方向へ本当に「拡大」しているときだけ。縮小は
+  // （どちらのハンドルでも）自分の領域内が空くだけなので、常に自分の元の順位を維持する側
+  // （else分岐）に倒す — でないと、縮小で重なる相手がいないため誤って最後尾に挿入される。
+  const growingIntoEarlierSpace=(dir==='top'&&newRows>pw.rows)||(dir==='left'&&newCols>pw.cols);
+
+  let n;
+  if(growingIntoEarlierSpace){
+    const dropStart=pw.page*(COLS*ROWS)+ncol*ROWS+nrow;
+    const dropEnd=dropStart+newCols*newRows-1;
+    const overlapIdx=others.findIndex(w=>{
+      const wStart=slotOf(w), wEnd=wStart+w.cols*w.rows-1;
+      return !(wEnd<dropStart||dropEnd<wStart);
+    });
+    n=overlapIdx!==-1?overlapIdx:others.length;
+  } else {
+    const origStart=slotOf(pw);
+    n=others.findIndex(w=>slotOf(w)>=origStart);
+    if(n===-1) n=others.length;
+  }
+
+  const items=[
+    ...others.slice(0,n).map(w=>({ids:[w.defId],cols:w.cols,footprintRows:w.rows})),
+    {ids:[defId],cols:newCols,footprintRows:newRows},
+    ...others.slice(n).map(w=>({ids:[w.defId],cols:w.cols,footprintRows:w.rows})),
+  ];
+  const placements=layoutSequential(items);
+  const next=clone(arr);
+  for(const p of placements){ const w=next.find(x=>x.defId===p.defId); w.page=p.page; w.col=p.col; w.row=p.row; }
+  const rw=next.find(w=>w.defId===defId); rw.cols=newCols; rw.rows=newRows;
+  return next;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -951,9 +1224,13 @@ function onDragMove(e){
     return;
   }
 
-  if(mode==='shift'){
-    const{ok,next}=calcShift(placed,defId,tPage,tCol,tRow,frac);
+  if(mode==='shift'||mode==='shift-unit'||mode==='shift-order'){
+    const calcFn = mode==='shift' ? calcShift : mode==='shift-unit' ? calcShiftUnit : calcShiftOrder;
+    const{ok,next}=calcFn(placed,defId,tPage,tCol,tRow,frac);
     applyPreviewFrame(defId,ok?next:null);
+    // ドラッグ中ウィジェットの実際の計算後の着地点を表示する。②③のN数え上げを、除いた
+    // 側の隙間を詰めてから行うよう直したことで、この着地点は常にカーソルのセルと一致する
+    // （ズレの原因はハイライトの表示側ではなく、この着地点の計算そのものにあった）。
     const target=(ok&&next)?next.find(w=>w.defId===defId):placed.find(w=>w.defId===defId);
     showDropPreview(target.page,target.col,target.row,target.cols,target.rows,false);
     return;
@@ -997,9 +1274,10 @@ function onDragEnd(e){
         placed.push({defId:ds.defId,page:tPage,col:cc,row:cr,cols:ds.cols,rows:ds.rows});
       else toast('スペースがありません');
     }
-  } else if(mode==='shift' && hit){
+  } else if((mode==='shift'||mode==='shift-unit'||mode==='shift-order') && hit){
     const{pageIdx:tPage,col:tCol,row:tRow,frac}=hit;
-    const{ok,next}=calcShift(placed,ds.defId,tPage,tCol,tRow,frac);
+    const calcFn = mode==='shift' ? calcShift : mode==='shift-unit' ? calcShiftUnit : calcShiftOrder;
+    const{ok,next}=calcFn(placed,ds.defId,tPage,tCol,tRow,frac);
     if(ok&&next) placed=next;
   } else if(mode!=='live-swap' && hit){
     const{pageIdx:tPage,col:tCol,row:tRow,frac}=hit;
@@ -1047,38 +1325,92 @@ let resizeState=null;
 function startResize(e,defId,dir){
   e.preventDefault();
   const pw=placed.find(p=>p.defId===defId);
-  resizeState={defId,dir,sx:e.clientX,sy:e.clientY,oc:pw.cols,or:pw.rows};
+  // basePlaced: スナップショットを1つだけ取っておき、ドラッグ中はここから毎回計算し直す
+  // （ウィジェットの移動ドラッグと同じで、確定はmouseupの瞬間だけ）。以前はドラッグ中の
+  // 毎フレームでplacedそのものを書き換えていたため、Sにしてから元のXSへ戻すような往復
+  // 操作をしても、後半の計算が前半の結果を土台にしてしまい、真の元の配置へ戻れなかった。
+  resizeState={defId,dir,sx:e.clientX,sy:e.clientY,oc:pw.cols,or:pw.rows,basePlaced:clone(placed),preview:null};
   window.addEventListener('mousemove',onResizeMove);
   window.addEventListener('mouseup',onResizeEnd);
 }
 function onResizeMove(e){
   if(!resizeState)return;
-  const{defId,dir,sx,sy,oc,or}=resizeState;
-  const pw=placed.find(p=>p.defId===defId);
+  const{defId,dir,sx,sy,oc,or,basePlaced}=resizeState;
+  const basePw=basePlaced.find(p=>p.defId===defId);
   const dx=e.clientX-sx,dy=e.clientY-sy;
   let nc=oc,nr=or;
   if(dir==='right' )nc=Math.max(1,Math.min(MAX_WIDGET_COLS,oc+Math.round(dx/(CELL_W+GAP))));
   if(dir==='bottom')nr=Math.max(1,Math.min(ROWS,or+Math.round(dy/(CELL_H+GAP))));
   if(dir==='left'  )nc=Math.max(1,Math.min(MAX_WIDGET_COLS,oc-Math.round(dx/(CELL_W+GAP))));
   if(dir==='top'   )nr=Math.max(1,Math.min(ROWS,or-Math.round(dy/(CELL_H+GAP))));
-  if((nc!==pw.cols||nr!==pw.rows)&&isValidShape(nc,nr)&&canPlace(occFrom(placed,defId),nc,nr,pw.page,pw.col,pw.row)){
-    pw.cols=nc;pw.rows=nr;render();
+
+  if(nc===oc&&nr===or){
+    // 元のサイズに戻ったら、何もしなかった扱いで元の配置をそのまま見せる。
+    resizeState.preview=null;
+    render(basePlaced);
+    return;
   }
+  if(!isValidShape(nc,nr)) return;
+
+  let next=null;
+  if(mode==='shift-unit'||mode==='shift-order'){
+    const fn=mode==='shift-unit'?resizeUnit:resizeOrder;
+    next=fn(basePlaced,defId,dir,nc,nr);
+  } else if(mode==='shift'){
+    // 上/左ハンドルは、掴んだ辺の反対側を固定してアンカー（col/row）自体を動かす。
+    let ncol=basePw.col, nrow=basePw.row;
+    if(dir==='left') ncol-=(nc-basePw.cols);
+    if(dir==='top')  nrow-=(nr-basePw.rows);
+    if(ncol>=0&&nrow>=0&&canPlace(occFrom(basePlaced,defId),nc,nr,basePw.page,ncol,nrow)){
+      next=clone(basePlaced);
+      const nw=next.find(w=>w.defId===defId);
+      nw.col=ncol; nw.row=nrow; nw.cols=nc; nw.rows=nr;
+    }
+  } else if(canPlace(occFrom(basePlaced,defId),nc,nr,basePw.page,basePw.col,basePw.row)){
+    next=clone(basePlaced);
+    const nw=next.find(w=>w.defId===defId);
+    nw.cols=nc; nw.rows=nr;
+  }
+
+  if(next){ resizeState.preview=next; render(next); }
 }
 function onResizeEnd(){
   window.removeEventListener('mousemove',onResizeMove);
   window.removeEventListener('mouseup',onResizeEnd);
+  if(resizeState) placed=resizeState.preview||resizeState.basePlaced;
   resizeState=null;
+  render();
 }
 
 // ═══════════════════════════════════════════════════════
 // MODE BAR
 // ═══════════════════════════════════════════════════════
+// ②③へ切り替えた瞬間に、その並び替えロジックの詰めルールを一度走らせておく。他モードで
+// 動かした結果、隙間の残った配置になっていても、タブを切った時点で②③自身の「常に詰めて
+// おく」という前提に揃える。
+function repackShiftUnit(arr){
+  const units=buildUnits(arr);
+  const placements=layoutSequential(units.map(u=>({ids:u.ids,cols:u.cols,footprintRows:ROWS,rowHint:u.row})));
+  const next=clone(arr);
+  for(const p of placements){ const w=next.find(x=>x.defId===p.defId); w.page=p.page; w.col=p.col; w.row=p.row; }
+  return next;
+}
+function repackShiftOrder(arr){
+  const sorted=arr.slice().sort((a,b)=>a.page-b.page||a.col-b.col||a.row-b.row);
+  const placements=layoutSequential(sorted.map(w=>({ids:[w.defId],cols:w.cols,footprintRows:w.rows})));
+  const next=clone(arr);
+  for(const p of placements){ const w=next.find(x=>x.defId===p.defId); w.page=p.page; w.col=p.col; w.row=p.row; }
+  return next;
+}
+
 document.querySelectorAll('.mode-btn').forEach(btn=>{
   if(btn.classList.contains('mode-locked')) return; // 未実装（検討中）
   btn.addEventListener('click',()=>{
     document.querySelectorAll('.mode-btn').forEach(b=>b.classList.remove('active'));
     btn.classList.add('active');mode=btn.dataset.mode;
+    if(mode==='shift-unit') placed=repackShiftUnit(placed);
+    if(mode==='shift-order') placed=repackShiftOrder(placed);
+    render();
     toast(`ロジック: ${btn.textContent}`);
   });
 });
@@ -1089,7 +1421,53 @@ document.querySelectorAll('.mode-btn').forEach(btn=>{
 document.getElementById('btn-reset').addEventListener('click',()=>{
   placed=clone(INITIAL_PLACED);currentPage=0;render();toast('リセットしました');
 });
+// 現在の並び替えロジックに応じて出し分ける簡易説明。詳細な仕様ではなく、概要と他の
+// ロジックとの違いを重点的に説明する（詳しい仕様は並び替え仕様書-シフト-v4.md / スワップ-v3.md参照）。
+const MODE_HELP={
+  'shift':{
+    title:'① シフト自由配置',
+    items:[
+      'ドロップ領域にいる邪魔なウィジェットを、まず上下左右の空きセルへ逃がそうとする。逃げ切れなかった分だけ、ドロップ領域の右側へ玉突きで押し出す。',
+      '歯抜けを許容する（②③のような自動詰めはしない）。',
+      '②③と違い「並び順」という概念を持たず、座標だけで動く。できるだけ他のウィジェットを動かさずに済ませようとするのが特徴。',
+    ],
+  },
+  'shift-unit':{
+    title:'② シフト左詰め',
+    items:[
+      '列（1列ぶんのまとまり＝ユニット）ごとに並び順を管理し、常に左詰めで敷き詰める。',
+      'ドロップ領域に割り込むと、そこより後ろの列が丸ごと1列ずつ右へ押し出される。',
+      '①と違って歯抜けを残さない（Lがページに収まらない場合を除く）。③と違って「列」が最小単位なので、同じ列に同居するXS2つは基本セットで動く。',
+    ],
+  },
+  'shift-order':{
+    title:'③ シフト左・上詰め',
+    items:[
+      'ウィジェット1つ1つの並び順を管理し、その順番通りに左上から敷き詰める。XSは上に空きがあれば自動的にそこへ詰まる。',
+      '②よりさらに細かい「ウィジェット単位」で並び順を持つので、同じ列にいたXS2つも別々に動くことがある。',
+      '②③はどちらも位置を「並び順」から導き出す方式のため、ドロップした位置と実際の着地点が①ほど直接的に対応しない場合がある。',
+    ],
+  },
+  'swap':{
+    title:'スワップ',
+    items:[
+      '同じ形同士（XS⇔XS, S⇔S, L⇔L）は常に交換。それ以外は列やページ単位でまとめて交換する。',
+      'シフト系（①②③）と違って"押し出し"は起きない。ドラッグ中とドロップ先の中身が入れ替わるだけで、3つ目以降のウィジェットが動くことはない。',
+      'ドロップするまで確定しない（プレビューのみ）。',
+    ],
+  },
+  'live-swap':{
+    title:'リアルタイムスワップ',
+    items:[
+      'スワップと同じ交換ルールを使うが、ホバーした瞬間に確定する（ドロップを待たない）。',
+      '唯一、ドラッグ中に交換が何度も連続して起こりうるロジック。ドロップは最後の位置を確定させるだけの操作になる。',
+    ],
+  },
+};
 document.getElementById('btn-help').addEventListener('click',()=>{
+  const info=MODE_HELP[mode]||MODE_HELP['shift'];
+  document.getElementById('modal-title').textContent=info.title;
+  document.getElementById('modal-body').innerHTML=info.items.map(t=>`<li>${t}</li>`).join('');
   modalOverlay.classList.add('open');
 });
 document.getElementById('modal-close').addEventListener('click',()=>{
