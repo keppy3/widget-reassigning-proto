@@ -71,7 +71,8 @@ body { width:var(--sw); height:var(--sh); overflow:hidden; background:var(--bg);
 /* WIDGET */
 .widget { position:absolute; border-radius:10px; background:var(--surface2);
   border:1.5px solid var(--border); cursor:default; z-index:1; pointer-events:auto;
-  transition:border-color .15s,box-shadow .2s,left .15s ease-out,top .15s ease-out;
+  transition:border-color .15s,box-shadow .2s,left .15s ease-out,top .15s ease-out,
+    width .15s ease-out,height .15s ease-out;
   touch-action:none; }
 .widget:hover { border-color:#3e4570; }
 .widget.lifting { transform:scale(1.05) translateY(-5px);
@@ -1118,6 +1119,19 @@ function renderWidgets(arr,ghostDefId=null){
       for(const dir of['top','bottom','left','right']){
         if(growthBlocked(arr,w,dir)) el.querySelector(`.handle-${dir}`).style.display='none';
       }
+    } else if(mode==='shift-unit'||mode==='shift-order'){
+      // ②③は常に左・上詰めで衝突を押し出して解決するので、左ハンドルが持つ固有の意味は
+      // 「伸ばして自分の順位を前へ割り込ませる」だけ（①のような空き探索の概念はない）。
+      // これは普通にウィジェットをドラッグして並び替える方が分かりやすいので、左ハンドル
+      // は常に非表示にする。
+      el.querySelector('.handle-left').style.display='none';
+      // 上段(row0)のXSを上へ、下段(最終行)のXSを下へ伸ばす操作は、②では反対側のハンドル
+      // と結果が同じになり（Sは常にrow0へ配置される）、③では盤面外に出るため常に失敗する
+      // ——どちらにせよ意味を持たないので非表示にする。
+      if(shapeOf(w)==='XS'){
+        if(w.row===0)      el.querySelector('.handle-top').style.display='none';
+        if(w.row===ROWS-1) el.querySelector('.handle-bottom').style.display='none';
+      }
     }
     el.querySelector('.widget-del').addEventListener('click',e=>{
       e.stopPropagation();
@@ -1264,6 +1278,28 @@ function applyPreviewFrame(ghostDefId,previewArr){
     const pos=widgetPos(origin,dw.page,dw.col,dw.row);
     el.style.left=pos.left+'px';
     el.style.top =pos.top+'px';
+  });
+}
+
+// applyPreviewFrame と同じ「既存DOM要素をその場で更新」方式のリサイズ版。②③でリサイズ
+// が他ウィジェットの再配置を引き起こしたとき、その移動もこの経路を通ることでCSS
+// トランジションが効く。リサイズ対象自身は幅/高さも一緒に更新する。
+function applyResizePreviewFrame(defId,previewArr){
+  const els={};
+  widgetLayer.querySelectorAll('.widget[data-def-id]').forEach(el=>{els[el.dataset.defId]=el;});
+  const origin=widgetLayerOrigin();
+  placed.forEach(w=>{
+    const el=els[w.defId];
+    if(!el) return;
+    const dw=previewArr.find(x=>x.defId===w.defId)||w;
+    const pos=widgetPos(origin,dw.page,dw.col,dw.row);
+    el.style.left=pos.left+'px';
+    el.style.top =pos.top+'px';
+    if(w.defId===defId){
+      el.style.width =wPx(dw.cols)+'px';
+      el.style.height=hPx(dw.rows)+'px';
+      el.dataset.shape=shapeOf(dw);
+    }
   });
 }
 
@@ -1466,7 +1502,7 @@ function onResizeMove(e){
   if(nc===oc&&nr===or){
     // 元のサイズに戻ったら、何もしなかった扱いで元の配置をそのまま見せる。
     resizeState.preview=null;
-    render(basePlaced);
+    applyResizePreviewFrame(defId,basePlaced);
     return;
   }
   if(!isValidShape(nc,nr)) return;
@@ -1491,7 +1527,7 @@ function onResizeMove(e){
     nw.cols=nc; nw.rows=nr;
   }
 
-  if(next){ resizeState.preview=next; render(next); }
+  if(next){ resizeState.preview=next; applyResizePreviewFrame(defId,next); }
 }
 function onResizeEnd(){
   window.removeEventListener('mousemove',onResizeMove);
