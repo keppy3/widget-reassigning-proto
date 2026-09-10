@@ -7,7 +7,7 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
   --bg:#0f1117; --surface:#1c1f2e; --surface2:#252840;
-  --border:#2e3250; --accent:#5b8df6; --red:#ef4444;
+  --border:#2e3250; --accent:#5b8df6; --red:#ef4444; --red-dim:#c0392b;
   --text:#e2e6f0; --text-dim:#7880a0;
   --cell-w:100px; --cell-h:90px; --gap:5px;
   --page-pad:12px; --header-h:56px; --sw:990px; --sh:510px;
@@ -82,23 +82,29 @@ body { width:var(--sw); height:var(--sh); overflow:hidden; background:var(--bg);
 .widget-content { flex:1; display:flex; align-items:center; justify-content:center; }
 .widget-emoji { font-size:22px; }
 
-/* Widget delete button */
+/* Widget delete button — タッチパネル想定のためホバーに依存せず常時表示 */
 .widget-del { position:absolute; top:4px; right:4px; width:18px; height:18px;
-  border-radius:50%; border:1px solid var(--border); background:var(--surface);
-  color:var(--text-dim); font-size:11px; line-height:18px; text-align:center;
-  cursor:pointer; opacity:0; transition:opacity .12s,background .12s,color .12s; z-index:20; }
-.widget:hover .widget-del { opacity:1; }
-.widget-del:hover { background:var(--red); color:#fff; border-color:var(--red); }
+  border-radius:50%; border:1px solid var(--red-dim); background:var(--red-dim);
+  color:#fff; font-size:10px; line-height:18px; text-align:center;
+  cursor:pointer; opacity:1; transition:opacity .12s; z-index:20; }
 
-/* HANDLES */
+/* HANDLES — 同じくホバーに依存せず常時表示。無効な方向（XSの左右／Lの上下）は
+   その形状では実際に動かせないので非表示にする。 */
 .handle { position:absolute; background:var(--accent); border-radius:3px;
-  opacity:0; transition:opacity .12s; z-index:10; }
-.widget:hover .handle { opacity:.55; }
-.handle:hover { opacity:1 !important; }
-.handle-top    { top:-4px;    left:50%; transform:translateX(-50%); width:28px; height:7px; cursor:n-resize; }
-.handle-bottom { bottom:-4px; left:50%; transform:translateX(-50%); width:28px; height:7px; cursor:s-resize; }
-.handle-left   { left:-4px;   top:50%;  transform:translateY(-50%); width:7px;  height:28px; cursor:w-resize; }
-.handle-right  { right:-4px;  top:50%;  transform:translateY(-50%); width:7px;  height:28px; cursor:e-resize; }
+  opacity:.55; transition:opacity .12s; z-index:10; }
+.handle:hover { opacity:1; }
+.widget[data-shape="XS"] .handle-left,
+.widget[data-shape="XS"] .handle-right { display:none; }
+.widget[data-shape="L"] .handle-top,
+.widget[data-shape="L"] .handle-bottom { display:none; }
+/* ドラッグ中は、下敷きになっている他ウィジェットの上をカーソルが通過しても
+   ハンドル／削除ボタンを出さない。 */
+body.dragging .widget .handle,
+body.dragging .widget .widget-del { opacity:0; }
+.handle-top    { top:3px;    left:50%; transform:translateX(-50%); width:28px; height:7px; cursor:n-resize; }
+.handle-bottom { bottom:3px; left:50%; transform:translateX(-50%); width:28px; height:7px; cursor:s-resize; }
+.handle-left   { left:3px;   top:50%;  transform:translateY(-50%); width:7px;  height:28px; cursor:w-resize; }
+.handle-right  { right:3px;  top:50%;  transform:translateY(-50%); width:7px;  height:28px; cursor:e-resize; }
 
 /* DROP PREVIEW — positioned relative to #viewport */
 #drop-preview { position:absolute; border-radius:10px; pointer-events:none; z-index:200; display:none;
@@ -280,6 +286,23 @@ function canPlace(occ,cols,rows,page,col,row){
   for(let dc=0;dc<cols;dc++) for(let dr=0;dr<rows;dr++)
     if(occ.has(`${page},${col+dc},${row+dr}`)) return false;
   return true;
+}
+
+// ①（自由配置）専用：このハンドルは「伸ばす」方向（XSの上下＝S化、Sの左右＝L化）だけ、
+// 実際に伸ばす先が盤面外か他ウィジェットで塞がっていれば動かせない。②③は衝突しても
+// 押し出して解決するのでこの概念自体が無く、対象外。「縮める」方向（Sの上下、Lの左右）
+// は空きを必要としないので常に成立する。
+function growthBlocked(arr,w,dir){
+  const shape=shapeOf(w);
+  if(shape==='XS' && (dir==='top'||dir==='bottom')){
+    const startRow = dir==='top' ? w.row-1 : w.row;
+    return !canPlace(occFrom(arr,w.defId), w.cols, 2, w.page, w.col, startRow);
+  }
+  if(shape==='S' && (dir==='left'||dir==='right')){
+    const startCol = dir==='left' ? w.col-1 : w.col;
+    return !canPlace(occFrom(arr,w.defId), 2, w.rows, w.page, startCol, w.row);
+  }
+  return false; // 縮める方向は対象外（常に成立する）
 }
 
 function firstFit(arr,cols,rows){
@@ -684,11 +707,19 @@ function calcShiftUnit(arr,defId,tPage,rawCol,rawRow,pointerFrac){
   if(shape==='XS'){
     const hitUnit=units.find(u=>u.kind==='xs-empty'&&u.page===tPage&&u.col===fcol);
     if(hitUnit){
-      const next=clone(arr);
-      const nd=next.find(w=>w.defId===defId);
-      const existing=next.find(w=>w.defId===hitUnit.ids[0]);
+      const merged=clone(arr);
+      const nd=merged.find(w=>w.defId===defId);
+      const existing=merged.find(w=>w.defId===hitUnit.ids[0]);
       if(frow===existing.row) existing.row=1-existing.row; // どかす（既存メンバーの実際の行を見て、空いている方へ）
       nd.page=tPage; nd.col=fcol; nd.row=frow;
+
+      // ドラッグ中だったXSは、合流した時点で「単独ユニット」ではなくなる。もし元々どこか
+      // 別の場所にユニットとして存在していたなら、そこが空いたままになるので、合流後の
+      // 並び順（＝ここでは変わらない）はそのままに、残り全体を詰め直す。
+      const mergedUnits=buildUnits(merged);
+      const placements=layoutSequential(mergedUnits.map(u=>({ids:u.ids,cols:u.cols,footprintRows:ROWS,rowHint:u.row})));
+      const next=clone(arr);
+      for(const p of placements){ const w=next.find(x=>x.defId===p.defId); w.page=p.page; w.col=p.col; w.row=p.row; }
       return{ok:true,next,fcol,frow};
     }
   }
@@ -699,15 +730,28 @@ function calcShiftUnit(arr,defId,tPage,rawCol,rawRow,pointerFrac){
   // なる。これが「カーソルとドロップ領域が一致しない」の真因だったので、表示ではなく
   // ここを直す。
   const cleanPlacements=layoutSequential(units.map(u=>({ids:u.ids,cols:u.cols,footprintRows:ROWS})));
-  const cleanIdxOf={};
+  const cleanOf={};
   for(const u of units){
     const p=cleanPlacements.find(pl=>pl.defId===u.ids[0]);
-    cleanIdxOf[u.ids[0]]=p.page*COLS+p.col;
+    const start=p.page*COLS+p.col;
+    cleanOf[u.ids[0]]={start,end:start+u.cols-1};
   }
 
-  const targetIdx=tPage*COLS+fcol;
+  // 相手がLのような複数列ユニットのときだけ範囲同士（起点方向で前後を判定）で比較する。
+  // 1列ユニットは「点」のまま比較する — ドラッグ中の幅（Lなら2列）まで巻き込んで比較する
+  // と、本来無関係な1列ユニットまで「重なっている」扱いになって巻き込まれてしまう。
+  const dropStart=tPage*COLS+fcol;
+  const dropEnd=dropStart+dw.cols-1;
+  const originIdx=dw.page*COLS+dw.col;
+  const rightward=originIdx<dropStart;
   let n=0;
-  for(const u of units){ if(cleanIdxOf[u.ids[0]]<targetIdx) n++; }
+  for(const u of units){
+    const{start,end}=cleanOf[u.ids[0]];
+    if(u.cols>1){
+      if(end<dropStart) n++;
+      else if(rightward && !(end<dropStart||dropEnd<start)) n++;
+    } else if(start<dropStart) n++;
+  }
 
   const dwUnit={ids:[defId],cols:dw.cols,footprintRows:ROWS,rowHint:frow}; // fresh unit — lands on whichever row was dropped on (XS only; S/L's frow is always 0)
   const newUnits=[...units.slice(0,n),dwUnit,...units.slice(n)];
@@ -715,7 +759,7 @@ function calcShiftUnit(arr,defId,tPage,rawCol,rawRow,pointerFrac){
   const placements=layoutSequential(newUnits.map(u=>({ids:u.ids,cols:u.cols,footprintRows:ROWS,rowHint:u.rowHint??u.row})));
   const next=clone(arr);
   for(const p of placements){ const w=next.find(x=>x.defId===p.defId); w.page=p.page; w.col=p.col; w.row=p.row; }
-  return{ok:true,next};
+  return{ok:true,next,fcol,frow};
 }
 
 // ═══════════════════════════════════════════════════════
@@ -748,12 +792,27 @@ function calcShiftOrder(arr,defId,tPage,rawCol,rawRow,pointerFrac){
 
   // ②と同じ理由で、数える前にドラッグ中を除いた「残り」を隙間なく詰め直しておく。
   const cleanPlacements=layoutSequential(others.map(w=>({ids:[w.defId],cols:w.cols,footprintRows:w.rows})));
-  const cleanSlotOf={};
-  for(const p of cleanPlacements){ cleanSlotOf[p.defId]=p.page*(COLS*ROWS)+p.col*ROWS+p.row; }
+  const cleanOf={};
+  for(const p of cleanPlacements){
+    const start=p.page*(COLS*ROWS)+p.col*ROWS+p.row;
+    const w=others.find(x=>x.defId===p.defId);
+    cleanOf[p.defId]={start,end:start+w.cols*w.rows-1};
+  }
 
-  const targetSlot=tPage*(COLS*ROWS)+fcol*ROWS+frow;
+  // ②と同じく、相手がLのように複数列（cols>1）のときだけ範囲同士を起点方向で判定する。
+  // Sは複数行だが1列しか占有しないので列方向の重なり判定は不要（単純な点の比較でよい）。
+  const dropStart=tPage*(COLS*ROWS)+fcol*ROWS+frow;
+  const dropEnd=dropStart+dw.cols*dw.rows-1;
+  const originSlot=dw.page*(COLS*ROWS)+dw.col*ROWS+dw.row;
+  const rightward=originSlot<dropStart;
   let n=0;
-  for(const w of others){ if(cleanSlotOf[w.defId]<targetSlot) n++; }
+  for(const w of others){
+    const{start,end}=cleanOf[w.defId];
+    if(w.cols>1){
+      if(end<dropStart) n++;
+      else if(rightward && !(end<dropStart||dropEnd<start)) n++;
+    } else if(start<dropStart) n++;
+  }
 
   const items=[
     ...others.slice(0,n).map(w=>({ids:[w.defId],cols:w.cols,footprintRows:w.rows})),
@@ -764,7 +823,7 @@ function calcShiftOrder(arr,defId,tPage,rawCol,rawRow,pointerFrac){
   const placements=layoutSequential(items);
   const next=clone(arr);
   for(const p of placements){ const w=next.find(x=>x.defId===p.defId); w.page=p.page; w.col=p.col; w.row=p.row; }
-  return{ok:true,next};
+  return{ok:true,next,fcol,frow};
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1046,6 +1105,7 @@ function renderWidgets(arr,ghostDefId=null){
     const el=document.createElement('div');
     el.className='widget';
     el.dataset.defId=w.defId;
+    el.dataset.shape=shapeOf(w); // 無効なハンドル（XSの左右／Lの上下）を隠すためのCSSフック
     const pos=widgetPos(origin,w.page,w.col,w.row);
     el.style.cssText=`left:${pos.left}px;top:${pos.top}px;width:${wPx(w.cols)}px;height:${hPx(w.rows)}px;`;
     el.innerHTML=widgetHTML(def)+
@@ -1054,6 +1114,11 @@ function renderWidgets(arr,ghostDefId=null){
       `<div class="handle handle-bottom" data-dir="bottom"></div>`+
       `<div class="handle handle-left"   data-dir="left"></div>`+
       `<div class="handle handle-right"  data-dir="right"></div>`;
+    if(mode==='shift'){
+      for(const dir of['top','bottom','left','right']){
+        if(growthBlocked(arr,w,dir)) el.querySelector(`.handle-${dir}`).style.display='none';
+      }
+    }
     el.querySelector('.widget-del').addEventListener('click',e=>{
       e.stopPropagation();
       placed=placed.filter(p=>p.defId!==w.defId);
@@ -1153,6 +1218,7 @@ function beginAddDrag(defId,cx,cy){
   floatEl.style.display='block';
   dragState={defId,fromAdd:true,cols:def.cols,rows:def.rows,offX:w/2,offY:h/2,...gridYBounds()};
   moveFloat(cx,cy);
+  document.body.classList.add('dragging');
   window.addEventListener('mousemove',onDragMove);
   window.addEventListener('mouseup',onDragEnd);
 }
@@ -1163,9 +1229,12 @@ function beginWidgetDrag(defId,cx,cy){
   floatEl.style.width=w+'px';floatEl.style.height=h+'px';
   floatName.textContent=DEFS[defId].name;floatEmoji.textContent=DEFS[defId].emoji;
   floatEl.style.display='block';
-  dragState={defId,fromAdd:false,cols:pw.cols,rows:pw.rows,offX:w/2,offY:h/2,...gridYBounds()};
+  dragState={defId,fromAdd:false,cols:pw.cols,rows:pw.rows,offX:w/2,offY:h/2,...gridYBounds(),
+    // ③直感補正：ドラッグ開始時点は元の位置を基準にする（何も動いていない状態）。
+    lastGoodDropArea:{next:placed,target:{page:pw.page,col:pw.col,row:pw.row,cols:pw.cols,rows:pw.rows}}};
   moveFloat(cx,cy);
   render(placed,defId);
+  document.body.classList.add('dragging');
   window.addEventListener('mousemove',onDragMove);
   window.addEventListener('mouseup',onDragEnd);
 }
@@ -1198,6 +1267,24 @@ function applyPreviewFrame(ghostDefId,previewArr){
   });
 }
 
+// ═══════════════════════════════════════════════════════
+// ③ 直感補正 — ①（カーソル位置そのまま）と②（実際の計算後の着地点）が大きくズレた
+// ときは、ドロップ領域の更新を保留して直前の位置に留める。
+//   XS/S: ①と②の列（ページ跨ぎも連続した列として数える）が1列以上ズレている
+//   L: ①と②が異なるページにある
+//   例外（②③＝重力のように常時詰め直すロジックのみ）：①が現在配置されている他ウィジェ
+//   ットの一番右より先の列にある場合は、②に吸い寄せられても直感に反しないので更新する。
+// ═══════════════════════════════════════════════════════
+function dropAreaDiverges(shape,tPage,fcol,targetPage,targetCol){
+  if(shape==='L') return tPage!==targetPage;
+  return Math.abs((tPage*COLS+fcol)-(targetPage*COLS+targetCol))>=1;
+}
+function isPastLastOccupied(others,tPage,fcol){
+  if(others.length===0) return true;
+  const maxLinear=Math.max(...others.map(w=>w.page*COLS+w.col+w.cols-1));
+  return (tPage*COLS+fcol)>maxLinear;
+}
+
 let lastHitKey='';
 function onDragMove(e){
   if(!dragState)return;
@@ -1212,7 +1299,11 @@ function onDragMove(e){
 
   const{pageIdx:tPage,col:tCol,row:tRow,frac}=hit;
   const{defId,cols,rows,fromAdd}=dragState;
-  const key=`${tPage},${tCol},${tRow}`;
+  // Lの左右半分判定（frac<0.5）はページ中央列の内部で切り替わるため、セル(col,row)
+  // だけをキーにすると同じセル内でのfrac変化を検知できずthresholdをまたいでも
+  // 再計算がスキップされてしまう。半分の情報もキーに含めて確実に再計算させる。
+  const half=frac<0.5?0:1;
+  const key=`${tPage},${tCol},${tRow},${half}`;
   if(key===lastHitKey)return;
   lastHitKey=key;
 
@@ -1226,13 +1317,24 @@ function onDragMove(e){
 
   if(mode==='shift'||mode==='shift-unit'||mode==='shift-order'){
     const calcFn = mode==='shift' ? calcShift : mode==='shift-unit' ? calcShiftUnit : calcShiftOrder;
-    const{ok,next}=calcFn(placed,defId,tPage,tCol,tRow,frac);
-    applyPreviewFrame(defId,ok?next:null);
-    // ドラッグ中ウィジェットの実際の計算後の着地点を表示する。②③のN数え上げを、除いた
-    // 側の隙間を詰めてから行うよう直したことで、この着地点は常にカーソルのセルと一致する
-    // （ズレの原因はハイライトの表示側ではなく、この着地点の計算そのものにあった）。
-    const target=(ok&&next)?next.find(w=>w.defId===defId):placed.find(w=>w.defId===defId);
-    showDropPreview(target.page,target.col,target.row,target.cols,target.rows,false);
+    const{ok,next,fcol,frow}=calcFn(placed,defId,tPage,tCol,tRow,frac);
+    if(ok){
+      // next===null は「ドラッグ中ウィジェットは今まさにこの場所にいる（動かす必要が無い）」
+      // という意味であって、計算失敗ではない。この場合の実際の状態はplacedそのもの。
+      const usedNext=next||placed;
+      const target=usedNext.find(w=>w.defId===defId);
+      const diverges=dropAreaDiverges(shapeOf(target),tPage,fcol,target.page,target.col);
+      const excepted=(mode==='shift-unit'||mode==='shift-order')&&
+        isPastLastOccupied(placed.filter(w=>w.defId!==defId),tPage,fcol);
+      if(!diverges||excepted){
+        // ③をクリアした＝これが新しい「直前の位置」になる。
+        dragState.lastGoodDropArea={next:usedNext,target:{page:target.page,col:target.col,row:target.row,cols:target.cols,rows:target.rows}};
+      }
+      // ズレていれば何もしない＝dragState.lastGoodDropAreaを更新せず、直前の位置のまま。
+    }
+    const shown=dragState.lastGoodDropArea;
+    applyPreviewFrame(defId,shown.next);
+    showDropPreview(shown.target.page,shown.target.col,shown.target.row,shown.target.cols,shown.target.rows,false);
     return;
   }
 
@@ -1258,6 +1360,7 @@ function onDragMove(e){
 function onDragEnd(e){
   window.removeEventListener('mousemove',onDragMove);
   window.removeEventListener('mouseup',onDragEnd);
+  document.body.classList.remove('dragging');
   dropPreview.style.display='none';
   floatEl.style.display='none';
   lastHitKey='';
@@ -1274,11 +1377,10 @@ function onDragEnd(e){
         placed.push({defId:ds.defId,page:tPage,col:cc,row:cr,cols:ds.cols,rows:ds.rows});
       else toast('スペースがありません');
     }
-  } else if((mode==='shift'||mode==='shift-unit'||mode==='shift-order') && hit){
-    const{pageIdx:tPage,col:tCol,row:tRow,frac}=hit;
-    const calcFn = mode==='shift' ? calcShift : mode==='shift-unit' ? calcShiftUnit : calcShiftOrder;
-    const{ok,next}=calcFn(placed,ds.defId,tPage,tCol,tRow,frac);
-    if(ok&&next) placed=next;
+  } else if(mode==='shift'||mode==='shift-unit'||mode==='shift-order'){
+    // ③直感補正を確定にも反映する：最後に実際に表示していたドロップ領域（凍結中ならその
+    // まま）へ確定する。ホバー中の表示と違う場所へこっそり配置されるのを防ぐ。
+    placed=ds.lastGoodDropArea.next;
   } else if(mode!=='live-swap' && hit){
     const{pageIdx:tPage,col:tCol,row:tRow,frac}=hit;
     const{ok,next}=resolveSwap(placed,ds.defId,tPage,tCol,tRow,frac);
@@ -1301,7 +1403,24 @@ function hitTestGrid(cx,cy){
     const frac=(cx-r.left)/r.width;
     return{gridEl:g,pageIdx:+g.dataset.pageIdx,col,row,frac};
   }
-  return null;
+  return nearestGridHit(cx,cy); // カーソルがどのページにも乗っていない場合、最も近いセルにフォールバック
+}
+// カーソルに最も近いグリッドへ座標をクランプしてセルを求める（hitTestGridのフォールバック）。
+function nearestGridHit(cx,cy){
+  let best=null,bestDist=Infinity;
+  for(const g of document.querySelectorAll('.grid')){
+    const r=g.getBoundingClientRect();
+    const ccx=Math.min(Math.max(cx,r.left),r.right);
+    const ccy=Math.min(Math.max(cy,r.top),r.bottom);
+    const dist=(ccx-cx)**2+(ccy-cy)**2;
+    if(dist<bestDist){ bestDist=dist; best={g,r,ccx,ccy}; }
+  }
+  if(!best) return null;
+  const{g,r,ccx,ccy}=best;
+  const col=Math.max(0,Math.min(COLS-1,Math.floor((ccx-r.left)/(CELL_W+GAP))));
+  const row=Math.max(0,Math.min(ROWS-1,Math.floor((ccy-r.top)/(CELL_H+GAP))));
+  const frac=Math.max(0,Math.min(1,(ccx-r.left)/r.width));
+  return{gridEl:g,pageIdx:+g.dataset.pageIdx,col,row,frac};
 }
 
 // ═══════════════════════════════════════════════════════
